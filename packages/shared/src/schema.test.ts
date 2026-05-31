@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   LOUPE_SCHEMA_VERSION,
+  error_codes,
   storage_keys,
   assert_annotation,
   assert_storage_envelope,
@@ -13,7 +14,11 @@ import {
   type AgentMark,
   type Annotation,
   type BoundaryKind,
+  type DeleteMarkResponse,
+  type GetMarkResponse,
+  type ListMarksResponse,
   type Locator,
+  type ResolveMarkResponse,
   type ResolveResult,
   type StorageEnvelope,
 } from "./schema.js";
@@ -234,6 +239,101 @@ describe("Loupe Phase 0 schema and storage contracts", () => {
     assert.equal(is_locator({ ...sampleLocator(), locatorStatus: "resolved" }), false);
     assert.equal(is_resolve_result({ ...resolveResult, locatorStatus: resolveResult.locator_status }), false);
     assert.equal(is_agent_mark({ ...sampleAgentMark(sampleLocator()), target: { ...sampleAgentMark(sampleLocator()).target, locatorStatus: "resolved" } }), false);
+  });
+
+  it("M3 error codes export the project scope, auth, assertion, and store failures", () => {
+    assert.equal(error_codes.scope_required, "SCOPE_REQUIRED");
+    assert.equal(error_codes.multi_project, "MULTI_PROJECT");
+    assert.equal(error_codes.not_found, "NOT_FOUND");
+    assert.equal(error_codes.assertion_mismatch, "ASSERTION_MISMATCH");
+    assert.equal(error_codes.auth_required, "AUTH_REQUIRED");
+    assert.equal(error_codes.invalid_request, "INVALID_REQUEST");
+    assert.equal(error_codes.corrupt_store, "CORRUPT_STORE");
+  });
+
+  it("M3 AgentMark responses use the low-noise shape and reject raw fields", () => {
+    const mark = sampleAgentMark(sampleLocator());
+    const getResponse: GetMarkResponse = mark;
+    const listResponse: ListMarksResponse = {
+      project: { project_id: mark.project.project_id, session_id: mark.project.session_id },
+      marks: [mark],
+    };
+
+    assert.equal(is_agent_mark(getResponse), true);
+    assert.equal(is_agent_mark(listResponse.marks[0]), true);
+
+    const rawFields: Array<[string, unknown]> = [
+      ["sync", { status: "failed", error_stack: "stack" }],
+      ["context", { viewport: { width: 1, height: 1, dpr: 1 } }],
+      ["replies", { items: [] }],
+      ["token", "secret-token"],
+      ["screenshot_bytes", "base64"],
+    ];
+
+    for (const [field, value] of rawFields) {
+      assert.equal(is_agent_mark({ ...mark, [field]: value }), false, field);
+    }
+
+    assert.equal(is_agent_mark({ ...mark, target: { ...mark.target, layout: { display: "grid" } } }), false);
+    assert.equal(is_agent_mark({ ...mark, media: { ...mark.media, screenshot_id: "shot-1" } }), false);
+    assert.equal(is_agent_mark({ ...mark, lifecycle: { ...mark.lifecycle, task_resolved_at: "2026-05-31T00:00:00.000Z" } }), false);
+    assert.equal(is_agent_mark({ ...mark, project: { ...mark.project, workspaceRootHash: "root-hash" } }), false);
+  });
+
+  it("M3 resolve and delete responses stay snake_case", () => {
+    const resolveResponse: ResolveMarkResponse = { ok: true, task_status: "resolved" };
+    const deleteResponse: DeleteMarkResponse = { ok: true, deleted_at: "2026-05-31T00:00:00.000Z" };
+
+    assert.deepEqual(Object.keys(resolveResponse), ["ok", "task_status"]);
+    assert.deepEqual(Object.keys(deleteResponse), ["ok", "deleted_at"]);
+    assert.equal("taskStatus" in resolveResponse, false);
+    assert.equal("deletedAt" in deleteResponse, false);
+  });
+
+  it("M3 StorageEnvelope tombstones are scoped per project", () => {
+    const annotation = sampleAnnotation();
+    const otherProjectAnnotation: Annotation = {
+      ...annotation,
+      id: "annotation-2",
+      project: {
+        ...annotation.project,
+        project_id: "project-other",
+        session_id: "session-other",
+      },
+    };
+    const envelope: StorageEnvelope = {
+      schema_version: LOUPE_SCHEMA_VERSION,
+      projects: {
+        [annotation.project.project_id]: {
+          sessions: { [annotation.project.session_id]: { marks: [annotation] } },
+          tombstones: ["deleted-in-project-abc"],
+        },
+        [otherProjectAnnotation.project.project_id]: {
+          sessions: { [otherProjectAnnotation.project.session_id]: { marks: [otherProjectAnnotation] } },
+          tombstones: ["deleted-in-project-other"],
+        },
+      },
+    };
+
+    assert.equal(is_storage_envelope(envelope), true);
+    assert.deepEqual(envelope.projects[annotation.project.project_id]?.tombstones, ["deleted-in-project-abc"]);
+    assert.deepEqual(envelope.projects[otherProjectAnnotation.project.project_id]?.tombstones, ["deleted-in-project-other"]);
+    const scopedProject = envelope.projects[annotation.project.project_id];
+    if (scopedProject === undefined) throw new Error("Expected scoped project");
+    assert.equal(is_storage_envelope({ ...envelope, tombstones: ["global-delete"] }), false);
+    assert.equal(
+      is_storage_envelope({
+        ...envelope,
+        projects: {
+          ...envelope.projects,
+          [annotation.project.project_id]: {
+            ...scopedProject,
+            tombstones: undefined,
+          },
+        },
+      }),
+      false,
+    );
   });
 });
 

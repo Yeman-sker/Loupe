@@ -1,11 +1,11 @@
 import { after, before, describe, it } from "node:test";
 import { createServer as createNodeServer, type Server as NodeServer } from "node:http";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { error_codes, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_TOKEN_MIN_BYTES } from "@loupe/shared";
+import { error_codes, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe/shared";
 import { ensure, parseCli, serve } from "./cli.js";
 import { createServer, ensureToken, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
@@ -21,9 +21,7 @@ type JsonRpcResponse = {
   id?: unknown;
   result?: unknown;
   error?: {
-    data?: {
-      code?: unknown;
-    };
+    data?: Record<string, unknown>;
   };
 };
 
@@ -97,6 +95,23 @@ describe("Loupe Phase 0 HTTP contract", () => {
     });
   }
 
+  it("exposes Phase 3 MCP mark tools", async () => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "tools-list", method: "tools/list" }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as JsonRpcResponse;
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "tools-list");
+    assert.ok(isRecord(body.result));
+    assert.ok(Array.isArray(body.result.tools));
+    const names = body.result.tools.map((tool) => (isRecord(tool) ? tool.name : undefined));
+    assert.deepEqual(names, ["list_marks", "get_mark", "resolve_mark", "delete_mark"]);
+  });
+
   it("returns SCOPE_REQUIRED for authorized unscoped list_marks", async () => {
     const body = await callListMarks(baseUrl, token, {});
     assert.equal(body.jsonrpc, "2.0");
@@ -158,23 +173,197 @@ describe("Loupe Phase 0 HTTP contract", () => {
     });
   });
 
-  it("returns not implemented for authorized REST mark item reads", async () => {
-    const response = await fetch(`${baseUrl}/v1/marks/some-id`, { headers: { authorization: `Bearer ${token}` } });
-    assert.equal(response.status, 501);
+  it("stores a valid Annotation and returns a low-noise mark", async () => {
+    const annotation = sampleAnnotation({ id: "rest-create-1", project_id: "rest-project-create", session_id: "rest-session-create" });
+    const response = await postMark(baseUrl, token, annotation);
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body, { mark: expectedAgentMark(annotation) });
+    assert.equal("schema_version" in body.mark, false);
+    assert.equal("sync" in body.mark, false);
+    assert.equal("context" in body.mark, false);
+    assert.equal("replies" in body.mark, false);
+    assert.equal("screenshot_id" in body.mark.media, false);
+  });
+
+  it("returns a Save-to-Agent readable mark through MCP list_marks under the daemon-online gate", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-p95-1", project_id: "mcp-project-p95", session_id: "mcp-session-p95" });
+
+    const start = performance.now();
+    await assertOk(await postMark(baseUrl, token, annotation));
+    const body = await callMcpTool(baseUrl, token, "list_marks", { project_id: annotation.project.project_id }, "mcp-p95-list");
+    const elapsedMs = performance.now() - start;
+
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "mcp-p95-list");
+    assert.ok(elapsedMs < 2000, `Expected Save-to-Agent readable first stage under 2000ms, got ${elapsedMs}ms`);
+    assert.deepEqual(body.result, { project: candidateFor(annotation), marks: [expectedAgentMark(annotation)] });
+    assertAgentMarkLowNoise((body.result as { marks: AgentMark[] }).marks[0]!);
+  });
+
+  it("gets a posted Annotation as a low-noise AgentMark through MCP get_mark", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-get-1", project_id: "mcp-project-get", session_id: "mcp-session-get" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const body = await callMcpTool(baseUrl, token, "get_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-get");
+
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "mcp-get");
+    assert.deepEqual(body.result, expectedAgentMark(annotation));
+    assertAgentMarkLowNoise(body.result as AgentMark);
+  });
+
+  it("resolves through MCP only with project assertion and read-back reports resolved", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-resolve-1", project_id: "mcp-project-resolve", session_id: "mcp-session-resolve" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const bare = await callMcpTool(baseUrl, token, "resolve_mark", { id: annotation.id }, "mcp-resolve-bare");
+    assert.equal(bare.jsonrpc, "2.0");
+    assert.equal(bare.id, "mcp-resolve-bare");
+    assert.equal(bare.error?.data?.code, error_codes.scope_required);
+
+    const resolved = await callMcpTool(baseUrl, token, "resolve_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-resolve");
+    assert.equal(resolved.jsonrpc, "2.0");
+    assert.equal(resolved.id, "mcp-resolve");
+    assert.deepEqual(resolved.result, { ok: true, task_status: "resolved" });
+
+    const readBack = await callMcpTool(baseUrl, token, "get_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-resolve-read");
+    assert.equal(readBack.jsonrpc, "2.0");
+    assert.equal(readBack.id, "mcp-resolve-read");
+    assert.ok(isRecord(readBack.result));
+    assert.ok(isRecord(readBack.result.lifecycle));
+    assert.equal(readBack.result.lifecycle.task_status, "resolved");
+    assert.equal(typeof readBack.result.lifecycle.updated_at, "string");
+    assertAgentMarkLowNoise(readBack.result as AgentMark);
+  });
+
+  it("deletes through MCP with project assertion and removes the mark from project lists", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-delete-1", project_id: "mcp-project-delete", session_id: "mcp-session-delete" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const bare = await callMcpTool(baseUrl, token, "delete_mark", { id: annotation.id }, "mcp-delete-bare");
+    assert.equal(bare.jsonrpc, "2.0");
+    assert.equal(bare.id, "mcp-delete-bare");
+    assert.equal(bare.error?.data?.code, error_codes.scope_required);
+
+    const deleted = await callMcpTool(baseUrl, token, "delete_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-delete");
+    assert.equal(deleted.jsonrpc, "2.0");
+    assert.equal(deleted.id, "mcp-delete");
+    assert.ok(isRecord(deleted.result));
+    assert.equal(deleted.result.ok, true);
+    assert.equal(typeof deleted.result.deleted_at, "string");
+
+    const list = await callMcpTool(baseUrl, token, "list_marks", { project_id: annotation.project.project_id }, "mcp-delete-list");
+    assert.equal(list.jsonrpc, "2.0");
+    assert.equal(list.id, "mcp-delete-list");
+    assert.deepEqual(list.result, { project: { project_id: annotation.project.project_id }, marks: [] });
+  });
+
+  it("returns MULTI_PROJECT candidates and no mixed marks for MCP same-origin list_marks", async () => {
+    const origin = "https://mcp-multi-project.test";
+    const first = sampleAnnotation({ id: "mcp-multi-project-1", project_id: "mcp-multi-project-a", session_id: "mcp-multi-session-a", origin, url: `${origin}/shared`, route_key: "/shared" });
+    const second = sampleAnnotation({ id: "mcp-multi-project-2", project_id: "mcp-multi-project-b", session_id: "mcp-multi-session-b", origin, url: `${origin}/shared`, route_key: "/shared" });
+    await assertOk(await postMark(baseUrl, token, first));
+    await assertOk(await postMark(baseUrl, token, second));
+
+    const body = await callMcpTool(baseUrl, token, "list_marks", { origin }, "mcp-multi-project");
+
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "mcp-multi-project");
+    assert.equal(body.error?.data?.code, error_codes.multi_project);
+    assert.deepEqual(body.error?.data, {
+      code: error_codes.multi_project,
+      message: "Project scope matches multiple projects.",
+      candidates: [candidateFor(first), candidateFor(second)],
+    });
+    assert.equal(body.result, undefined);
+  });
+
+  it("requires and accepts project assertion for REST mark reads", async () => {
+    const annotation = sampleAnnotation({ id: "rest-read-1", project_id: "rest-project-read", session_id: "rest-session-read" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const bare = await fetch(`${baseUrl}/v1/marks/${annotation.id}`, { headers: authHeaders(token) });
+    assert.equal(bare.status, 400);
+    assert.deepEqual(await bare.json(), {
+      error: { code: error_codes.scope_required, message: "Project assertion is required to read a mark." },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { mark: expectedAgentMark(annotation) });
+  });
+
+  it("sets resolved for asserted REST resolve and rejects bare id resolve", async () => {
+    const annotation = sampleAnnotation({ id: "rest-resolve-1", project_id: "rest-project-resolve", session_id: "rest-session-resolve" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const bare = await fetch(`${baseUrl}/v1/marks/${annotation.id}/resolve`, { method: "POST", headers: authHeaders(token) });
+    assert.equal(bare.status, 400);
+    assert.deepEqual(await bare.json(), {
+      error: { code: error_codes.scope_required, message: "Project assertion is required to resolve a mark." },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/marks/${annotation.id}/resolve?project_id=${annotation.project.project_id}`, { method: "POST", headers: authHeaders(token) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, task_status: "resolved" });
+
+    const readBack = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+    assert.equal(readBack.status, 200);
+    const body = await readBack.json();
+    assert.equal(body.mark.lifecycle.task_status, "resolved");
+    assert.equal(typeof body.mark.lifecycle.updated_at, "string");
+  });
+
+  it("removes active mark and returns deleted_at for asserted REST delete and rejects bare id delete", async () => {
+    const annotation = sampleAnnotation({ id: "rest-delete-1", project_id: "rest-project-delete", session_id: "rest-session-delete" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const bare = await fetch(`${baseUrl}/v1/marks/${annotation.id}`, { method: "DELETE", headers: authHeaders(token) });
+    assert.equal(bare.status, 400);
+    assert.deepEqual(await bare.json(), {
+      error: { code: error_codes.scope_required, message: "Project assertion is required to delete a mark." },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { method: "DELETE", headers: authHeaders(token) });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(typeof body.deleted_at, "string");
+
+    const list = await fetch(`${baseUrl}/v1/marks?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+    assert.equal(list.status, 200);
+    assert.deepEqual(await list.json(), { project: { project_id: annotation.project.project_id }, marks: [] });
+  });
+
+  it("rejects wrong project assertion with ASSERTION_MISMATCH", async () => {
+    const annotation = sampleAnnotation({ id: "rest-mismatch-1", project_id: "rest-project-mismatch", session_id: "rest-session-mismatch" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const response = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=wrong-project`, { headers: authHeaders(token) });
+    assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), {
-      error: { code: error_codes.invalid_request, message: "Mark item operations are not implemented in Phase 0." },
+      error: { code: error_codes.assertion_mismatch, message: "Project assertion does not match mark." },
     });
   });
 
-  it("returns not implemented for authorized REST mark mutations", async () => {
-    const response = await fetch(`${baseUrl}/v1/marks`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ project_id: "project-123" }),
-    });
-    assert.equal(response.status, 501);
+  it("returns MULTI_PROJECT candidates for multi-project same-origin list", async () => {
+    const origin = "https://multi-project.test";
+    const first = sampleAnnotation({ id: "multi-project-1", project_id: "multi-project-a", session_id: "multi-session-a", origin, url: `${origin}/shared`, route_key: "/shared" });
+    const second = sampleAnnotation({ id: "multi-project-2", project_id: "multi-project-b", session_id: "multi-session-b", origin, url: `${origin}/shared`, route_key: "/shared" });
+    await assertOk(await postMark(baseUrl, token, first));
+    await assertOk(await postMark(baseUrl, token, second));
+
+    const query = new URLSearchParams({ origin: first.project.origin });
+    const response = await fetch(`${baseUrl}/v1/marks?${query}`, { headers: authHeaders(token) });
+    assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), {
-      error: { code: error_codes.invalid_request, message: "Mark mutations are not implemented in Phase 0." },
+      error: {
+        code: error_codes.multi_project,
+        message: "Project scope matches multiple projects.",
+        candidates: [candidateFor(first), candidateFor(second)],
+      },
     });
   });
  });
@@ -198,6 +387,35 @@ describe("Loupe Phase 0 token and server status files", () => {
       });
       assert.deepEqual(JSON.parse(await readFile(serverStatusPathForHome(home), "utf8")), status);
     } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Loupe Phase 3 marks store health", () => {
+  it("reports corrupt marks.json backup warning on /health", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const token = "phase-3-health-token";
+    await writeFile(join(home, "marks.json"), "{not-json", "utf8");
+    const server = createServer({ home, port: 0, token, version: "phase-3-health-test" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/health`);
+
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.ok, true);
+      assert.deepEqual(body.warnings, [
+        {
+          code: "CORRUPT_MARKS_JSON",
+          message: "marks.json was corrupt JSON and was backed up.",
+          file: body.warnings[0].file,
+        },
+      ]);
+      assert.match(body.warnings[0].file, /^marks\.json\.corrupted\./);
+    } finally {
+      if (server.listening) await closeServer(server);
       await rm(home, { recursive: true, force: true });
     }
   });
@@ -240,11 +458,148 @@ describe("Loupe Phase 0 CLI", () => {
   });
 });
 
-async function callListMarks(
+function authHeaders(token: string): HeadersInit {
+  return { authorization: `Bearer ${token}` };
+}
+
+async function postMark(baseUrl: string, token: string, annotation: Annotation): Promise<Response> {
+  return fetch(`${baseUrl}/v1/marks`, {
+    method: "POST",
+    headers: { ...authHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify(annotation),
+  });
+}
+
+async function assertOk(response: Response): Promise<void> {
+  if (response.status !== 200) assert.fail(`Expected 200 response, got ${response.status}: ${await response.text()}`);
+}
+
+function sampleAnnotation(overrides: { id: string; project_id: string; session_id: string; route_key?: string; url?: string; origin?: string; branch?: string } = { id: "annotation-1", project_id: "project-abc", session_id: "session-def" }): Annotation {
+  const locator = sampleLocator();
+  const routeKey = overrides.route_key ?? "/page";
+  const url = overrides.url ?? `https://example.test${routeKey}`;
+  const project: Annotation["project"] = {
+    project_id: overrides.project_id,
+    workspace_root_hash: "root-hash",
+    origin: overrides.origin ?? "https://example.test",
+    url,
+    route_key: routeKey,
+    session_id: overrides.session_id,
+  };
+  if (overrides.branch !== undefined) project.branch = overrides.branch;
+
+  return {
+    schema_version: LOUPE_SCHEMA_VERSION,
+    id: overrides.id,
+    project,
+    target: {
+      locator,
+      ...(locator.evidence.boundary === undefined ? {} : { boundary: locator.evidence.boundary }),
+      resolution: {
+        locator_status: "resolved",
+        confidence: 0.99,
+        matched_by: ["primary"],
+        resolved_at: "2026-05-31T00:00:00.000Z",
+      },
+    },
+    intent: { comment: "Inspect nested target", kind: "question" },
+    context: {
+      element: { tag: "button", classes: ["save"], text: "Save", selector_preview: "button.save" },
+      viewport: { width: 1280, height: 720, dpr: 2 },
+      position: { x: 10, y: 20, width: 80, height: 32 },
+    },
+    sync: { status: "local_only", retry_count: 0 },
+    media: { has_screenshot: false },
+    replies: { items: [] },
+    lifecycle: {
+      task_status: "open",
+      created_at: "2026-05-31T00:00:00.000Z",
+      updated_at: "2026-05-31T00:00:00.000Z",
+    },
+  };
+}
+
+function sampleLocator(): Locator {
+  return {
+    frame_path: [{ selector: "iframe[name=app]", index: 0, name: "app" }],
+    primary: { selector: "button.save", strategy: "stable_class" },
+    alternates: [{ selector: "button:nth-of-type(1)", strategy: "nth_path" }],
+    evidence: {
+      tag: "button",
+      accessible_name: "Save",
+      classes: { stable: ["save"], total: 1 },
+      text: { normalized: "Save", hash: "hash-save", length: 4 },
+      nth_path: "html > body > app-shell > button:nth-of-type(1)",
+      parent_chain: [{ tag: "app-shell" }],
+      shadow_path: ["app-shell", "settings-panel"],
+      geometry: { x: 10, y: 20, width: 80, height: 32, viewport_width: 1280, viewport_height: 720, dpr: 2 },
+      boundary: {
+        kind: "closed_shadow_root",
+        target_scope: "boundary_shell",
+        internal_target_supported: false,
+        shell_selector: "settings-panel",
+        reason: "Closed shadow root requires marking the host shell.",
+      },
+    },
+  };
+}
+
+function expectedAgentMark(annotation: Annotation): AgentMark {
+  const project: AgentMark["project"] = {
+    project_id: annotation.project.project_id,
+    workspace_root_hash: annotation.project.workspace_root_hash,
+    url: annotation.project.url,
+    route_key: annotation.project.route_key,
+    session_id: annotation.project.session_id,
+  };
+  if (annotation.project.branch !== undefined) project.branch = annotation.project.branch;
+
+  const target: AgentMark["target"] = {
+    selector: annotation.target.locator.primary.selector,
+    selector_preview: annotation.context.element.selector_preview,
+    tag: annotation.context.element.tag,
+    locator_status: annotation.target.resolution.locator_status,
+    confidence: annotation.target.resolution.confidence,
+    matched_by: annotation.target.resolution.matched_by,
+  };
+  if (annotation.target.locator.frame_path !== undefined) target.frame_path = annotation.target.locator.frame_path;
+  if (annotation.target.locator.evidence.shadow_path !== undefined) target.shadow_path = annotation.target.locator.evidence.shadow_path;
+  if (annotation.target.boundary !== undefined) target.boundary = annotation.target.boundary;
+  if (annotation.context.element.text !== undefined) target.text = annotation.context.element.text;
+  if (annotation.context.element.classes !== undefined) target.classes = annotation.context.element.classes;
+  if (annotation.target.locator.evidence.nth_path !== undefined) target.path = annotation.target.locator.evidence.nth_path;
+
+  return {
+    id: annotation.id,
+    project,
+    intent: { comment: annotation.intent.comment, kind: annotation.intent.kind },
+    target,
+    media: { has_screenshot: annotation.media.has_screenshot },
+    lifecycle: {
+      task_status: annotation.lifecycle.task_status,
+      created_at: annotation.lifecycle.created_at,
+      updated_at: annotation.lifecycle.updated_at,
+    },
+  };
+}
+
+function candidateFor(annotation: Annotation): Record<string, string> {
+  return {
+    project_id: annotation.project.project_id,
+    workspace_root_hash: annotation.project.workspace_root_hash,
+    origin: annotation.project.origin,
+    url: annotation.project.url,
+    route_key: annotation.project.route_key,
+    session_id: annotation.project.session_id,
+  };
+}
+
+async function callMcpTool(
   baseUrl: string,
   token: string,
+  name: string,
   args: Record<string, unknown>,
-  id = "list-unscoped",
+  id = "mcp-call",
 ): Promise<JsonRpcResponse> {
   const response = await fetch(`${baseUrl}/mcp`, {
     method: "POST",
@@ -256,11 +611,32 @@ async function callListMarks(
       jsonrpc: "2.0",
       id,
       method: "tools/call",
-      params: { name: "list_marks", arguments: args },
+      params: { name, arguments: args },
     }),
   });
   assert.equal(response.status, 200);
   return (await response.json()) as JsonRpcResponse;
+}
+
+async function callListMarks(
+  baseUrl: string,
+  token: string,
+  args: Record<string, unknown>,
+  id = "list-unscoped",
+): Promise<JsonRpcResponse> {
+  return callMcpTool(baseUrl, token, "list_marks", args, id);
+}
+
+function assertAgentMarkLowNoise(mark: AgentMark): void {
+  assert.equal("schema_version" in mark, false);
+  assert.equal("sync" in mark, false);
+  assert.equal("context" in mark, false);
+  assert.equal("replies" in mark, false);
+  assert.equal("screenshot_id" in mark.media, false);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 async function listenEphemeral(server: NodeServer): Promise<void> {

@@ -12,10 +12,13 @@ export const LOUPE_SERVER_LOG_PATH = "~/.loupe/server.log" as const;
 export const error_codes = {
   scope_required: "SCOPE_REQUIRED",
   multi_project: "MULTI_PROJECT",
+  auth_required: "AUTH_REQUIRED",
   unauthorized: "UNAUTHORIZED",
   not_found: "NOT_FOUND",
+  assertion_mismatch: "ASSERTION_MISMATCH",
   conflict: "CONFLICT",
   invalid_request: "INVALID_REQUEST",
+  corrupt_store: "CORRUPT_STORE",
   internal_error: "INTERNAL_ERROR",
 } as const;
 
@@ -1369,6 +1372,8 @@ export type GetMarkRequest = {
   id: string;
 } & ProjectScopeInput;
 
+export type GetMarkResponse = AgentMark;
+
 export type ResolveMarkRequest = {
   id: string;
   resolution_note?: string;
@@ -1475,6 +1480,14 @@ function has_no_known_camel_case_fields(value: unknown): boolean {
     if (known_camel_case_fields.has(key) || !has_no_known_camel_case_fields(child)) return false;
   }
   return true;
+}
+
+function has_only_keys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function is_task_status(value: unknown): value is Annotation["lifecycle"]["task_status"] {
+  return value === "open" || value === "resolved" || value === "archived";
 }
 
 function has_optional_string(record: Record<string, unknown>, key: string): boolean {
@@ -1684,15 +1697,31 @@ export function assert_annotation(value: unknown): asserts value is Annotation {
   if (!is_annotation(value)) throw new TypeError("Expected Annotation wire contract");
 }
 
+const storage_envelope_keys: ReadonlySet<string> = new Set(["schema_version", "projects"]);
+const storage_project_keys: ReadonlySet<string> = new Set(["sessions", "tombstones"]);
+const storage_session_keys: ReadonlySet<string> = new Set(["marks"]);
+
 export function is_storage_envelope(value: unknown): value is StorageEnvelope {
-  if (!is_record(value) || !has_no_known_camel_case_fields(value) || value.schema_version !== LOUPE_SCHEMA_VERSION) return false;
+  if (
+    !is_record(value) ||
+    !has_no_known_camel_case_fields(value) ||
+    !has_only_keys(value, storage_envelope_keys) ||
+    value.schema_version !== LOUPE_SCHEMA_VERSION
+  ) {
+    return false;
+  }
   if (!is_record(value.projects)) return false;
   return Object.values(value.projects).every(
     (project) =>
       is_record(project) &&
+      has_only_keys(project, storage_project_keys) &&
       is_record(project.sessions) &&
       Object.values(project.sessions).every(
-        (session) => is_record(session) && Array.isArray(session.marks) && session.marks.every(is_annotation),
+        (session) =>
+          is_record(session) &&
+          has_only_keys(session, storage_session_keys) &&
+          Array.isArray(session.marks) &&
+          session.marks.every(is_annotation),
       ) &&
       is_string_array(project.tombstones),
   );
@@ -1702,6 +1731,34 @@ export function assert_storage_envelope(value: unknown): asserts value is Storag
   if (!is_storage_envelope(value)) throw new TypeError("Expected StorageEnvelope wire contract");
 }
 
+const agent_mark_keys: ReadonlySet<string> = new Set(["id", "project", "intent", "target", "framework", "media", "lifecycle"]);
+const agent_project_keys: ReadonlySet<string> = new Set([
+  "project_id",
+  "workspace_root_hash",
+  "branch",
+  "url",
+  "route_key",
+  "session_id",
+]);
+const agent_intent_keys: ReadonlySet<string> = new Set(["comment", "kind"]);
+const agent_target_keys: ReadonlySet<string> = new Set([
+  "frame_path",
+  "shadow_path",
+  "boundary",
+  "selector",
+  "selector_preview",
+  "tag",
+  "text",
+  "classes",
+  "path",
+  "locator_status",
+  "confidence",
+  "matched_by",
+]);
+const agent_framework_keys: ReadonlySet<string> = new Set(["name", "component", "source_hint"]);
+const agent_media_keys: ReadonlySet<string> = new Set(["has_screenshot"]);
+const agent_lifecycle_keys: ReadonlySet<string> = new Set(["task_status", "created_at", "updated_at"]);
+
 export function is_agent_mark(value: unknown): value is AgentMark {
   if (!is_record(value) || value.schema_version !== undefined || !has_no_known_camel_case_fields(value)) return false;
   const project = value.project;
@@ -1710,31 +1767,47 @@ export function is_agent_mark(value: unknown): value is AgentMark {
   const media = value.media;
   const lifecycle = value.lifecycle;
   return (
+    has_only_keys(value, agent_mark_keys) &&
     typeof value.id === "string" &&
     is_record(project) &&
+    has_only_keys(project, agent_project_keys) &&
     typeof project.project_id === "string" &&
     typeof project.workspace_root_hash === "string" &&
+    has_optional_string(project, "branch") &&
     typeof project.url === "string" &&
     typeof project.route_key === "string" &&
     typeof project.session_id === "string" &&
     is_record(intent) &&
+    has_only_keys(intent, agent_intent_keys) &&
     typeof intent.comment === "string" &&
     typeof intent.kind === "string" &&
     is_record(target) &&
+    has_only_keys(target, agent_target_keys) &&
     (target.frame_path === undefined || is_frame_path(target.frame_path)) &&
     (target.shadow_path === undefined || is_string_array(target.shadow_path)) &&
     (target.boundary === undefined || is_boundary(target.boundary)) &&
     typeof target.selector === "string" &&
     typeof target.selector_preview === "string" &&
     typeof target.tag === "string" &&
+    has_optional_string(target, "text") &&
+    (target.classes === undefined || is_string_array(target.classes)) &&
+    has_optional_string(target, "path") &&
     typeof target.locator_status === "string" &&
     locator_statuses.has(target.locator_status) &&
     is_number(target.confidence) &&
     is_string_array(target.matched_by) &&
+    (value.framework === undefined ||
+      (is_record(value.framework) &&
+        has_only_keys(value.framework, agent_framework_keys) &&
+        typeof value.framework.name === "string" &&
+        has_optional_string(value.framework, "component") &&
+        has_optional_string(value.framework, "source_hint"))) &&
     is_record(media) &&
+    has_only_keys(media, agent_media_keys) &&
     typeof media.has_screenshot === "boolean" &&
     is_record(lifecycle) &&
-    typeof lifecycle.task_status === "string" &&
+    has_only_keys(lifecycle, agent_lifecycle_keys) &&
+    is_task_status(lifecycle.task_status) &&
     typeof lifecycle.created_at === "string" &&
     typeof lifecycle.updated_at === "string"
   );

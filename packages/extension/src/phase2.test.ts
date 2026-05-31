@@ -1,14 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LOUPE_SCHEMA_VERSION, storage_keys, assert_annotation, type Annotation, type Locator, type ResolveResult } from "@loupe/shared";
+import { LOUPE_SCHEMA_VERSION, storage_keys, assert_annotation, type AgentMark, type Annotation, type Locator, type ResolveResult } from "@loupe/shared";
 import {
   copy_markdown,
   create_annotation,
   delete_annotation,
+  fetch_and_reconcile_daemon_marks,
+  probe_daemon_health,
   project_scope_from_url,
+  reconcile_daemon_marks,
   resolve_annotation,
   session_marks_key,
+  sync_annotation_to_daemon,
   validate_comment,
+  type DaemonFetch,
   type MarkStore,
 } from "./phase2-storage.js";
 
@@ -159,6 +164,86 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.throws(() => sample_annotation({ id: "bad-comment", comment: "   " }), /non-empty comment/);
     assert.equal(validate_comment("  keep me  "), "keep me");
   });
+
+  it("probes daemon health with injected fetch", async () => {
+    const fetch = fetch_sequence([{ ok: true, body: { ok: true, name: "loupe", version: "0.0.0", port: 7373, requires_auth: true } }]);
+
+    const health = await probe_daemon_health(fetch, "http://127.0.0.1:7373");
+
+    assert.equal(health?.ok, true);
+    assert.equal(fetch.calls[0]?.input, "http://127.0.0.1:7373/health");
+  });
+
+  it("syncs a local mark to daemon and marks it synced", async () => {
+    const mark = sample_annotation({ id: "mark-sync" });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [mark] });
+    const fetch = fetch_sequence([{ ok: true, body: { ok: true } }]);
+
+    const result = await sync_annotation_to_daemon({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), mark);
+
+    assert.equal(result.ok, true);
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, mark.id);
+    assert.equal(stored?.sync.status, "synced");
+    assert.equal(stored?.sync.last_synced_at, RESOLVED_AT);
+    assert.equal(stored?.sync.retry_count, 0);
+    assert.equal(fetch.calls[0]?.input, "http://127.0.0.1:7373/v1/marks");
+    assert.equal(fetch.calls[0]?.init?.method, "POST");
+    assert.equal(header_value(fetch.calls[0]?.init?.headers, "authorization"), "Bearer token-123");
+    assert.equal(header_value(fetch.calls[0]?.init?.headers, "content-type"), "application/json");
+    assert.deepEqual(JSON.parse(String(fetch.calls[0]?.init?.body)), mark);
+  });
+
+  it("preserves local mark and marks failed when daemon sync fails", async () => {
+    const mark = sample_annotation({ id: "mark-fail" });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [mark] });
+    const fetch = fetch_sequence([{ ok: false, status: 503, body: { error: { message: "down" } } }]);
+
+    const result = await sync_annotation_to_daemon({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), mark);
+
+    assert.equal(result.ok, false);
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, mark.id);
+    assert.equal(stored?.intent.comment, mark.intent.comment);
+    assert.equal(stored?.sync.status, "failed");
+    assert.equal(stored?.sync.retry_count, 1);
+    assert.match(stored?.sync.last_error ?? "", /503/);
+  });
+
+  it("fetches scoped daemon marks and reconciles a resolved mutation", async () => {
+    const mark = { ...sample_annotation({ id: "mark-resolved-daemon" }), sync: { status: "synced" as const, retry_count: 0 } };
+    const store = new MemoryStore({ [session_marks_key(PROJECT_ID, SESSION_ID)]: [mark] });
+    const daemon_mark = sample_agent_mark(mark, { task_status: "resolved", updated_at: RESOLVED_AT });
+    const fetch = fetch_sequence([{ ok: true, body: { project: { project_id: PROJECT_ID }, marks: [daemon_mark] } }]);
+
+    await fetch_and_reconcile_daemon_marks({ fetch, store }, daemon_options(), mark.project);
+
+    const stored = stored_marks(store)[0];
+    assert.equal(fetch.calls[0]?.init?.method, "GET");
+    assert.equal(header_value(fetch.calls[0]?.init?.headers, "authorization"), "Bearer token-123");
+    assert.match(fetch.calls[0]?.input ?? "", /\/v1\/marks\?/);
+    assert.match(fetch.calls[0]?.input ?? "", /project_id=project-abc/);
+    assert.match(fetch.calls[0]?.input ?? "", /session_id=session-def/);
+    assert.equal(stored?.lifecycle.task_status, "resolved");
+    assert.equal(stored?.lifecycle.task_resolved_at, RESOLVED_AT);
+    assert.equal(stored?.lifecycle.updated_at, RESOLVED_AT);
+    assert.equal(stored?.sync.status, "synced");
+  });
+
+  it("reconciles daemon delete by removing active mark and writing a tombstone", async () => {
+    const deleted = { ...sample_annotation({ id: "mark-deleted" }), sync: { status: "synced" as const, retry_count: 0 } };
+    const kept = { ...sample_annotation({ id: "mark-kept" }), sync: { status: "synced" as const, retry_count: 0 } };
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const tombstones_key = storage_keys.project_tombstones(PROJECT_ID);
+    const store = new MemoryStore({ [marks_key]: [deleted, kept], [tombstones_key]: ["older"] });
+
+    await reconcile_daemon_marks(store, { project_id: PROJECT_ID, session_id: SESSION_ID }, [sample_agent_mark(kept)]);
+
+    assert.deepEqual(stored_marks(store).map((mark) => mark.id), [kept.id]);
+    assert.deepEqual(store.data.get(tombstones_key), ["older", deleted.id]);
+  });
 });
 
 const PROJECT_ID = "project-abc";
@@ -252,6 +337,75 @@ function sample_locator(): Locator {
       parent_chain: [{ tag: "form", stable_attr: "id=settings" }],
     },
   };
+}
+
+function sample_agent_mark(mark: Annotation, overrides: { task_status?: "open" | "resolved" | "archived"; updated_at?: string } = {}): AgentMark {
+  return {
+    id: mark.id,
+    project: {
+      project_id: mark.project.project_id,
+      workspace_root_hash: mark.project.workspace_root_hash,
+      url: mark.project.url,
+      route_key: mark.project.route_key,
+      session_id: mark.project.session_id,
+    },
+    intent: { comment: mark.intent.comment, kind: mark.intent.kind },
+    target: {
+      selector: mark.target.locator.primary.selector,
+      selector_preview: mark.context.element.selector_preview,
+      tag: mark.context.element.tag,
+      ...(mark.context.element.text === undefined ? {} : { text: mark.context.element.text }),
+      ...(mark.context.element.classes === undefined ? {} : { classes: mark.context.element.classes }),
+      locator_status: mark.target.resolution.locator_status,
+      confidence: mark.target.resolution.confidence,
+      matched_by: mark.target.resolution.matched_by,
+    },
+    media: { has_screenshot: mark.media.has_screenshot },
+    lifecycle: {
+      task_status: overrides.task_status ?? mark.lifecycle.task_status,
+      created_at: mark.lifecycle.created_at,
+      updated_at: overrides.updated_at ?? mark.lifecycle.updated_at,
+    },
+  };
+}
+
+function daemon_options() {
+  return { base_url: "http://127.0.0.1:7373", token: "token-123" };
+}
+
+function stored_marks(store: MemoryStore): Annotation[] {
+  return store.data.get(session_marks_key(PROJECT_ID, SESSION_ID)) as Annotation[];
+}
+
+type FetchCall = { input: string; init?: RequestInit };
+
+type FetchFixture = { ok: boolean; status?: number; body: unknown };
+
+function fetch_sequence(fixtures: FetchFixture[]): DaemonFetch & { calls: FetchCall[] } {
+  const calls: FetchCall[] = [];
+  const fetch_impl = (async (input: string, init?: RequestInit) => {
+    calls.push(init === undefined ? { input } : { input, init });
+    const fixture = fixtures.shift();
+    if (fixture === undefined) throw new Error("Unexpected fetch call");
+    return {
+      ok: fixture.ok,
+      status: fixture.status ?? (fixture.ok ? 200 : 500),
+      json: async () => fixture.body,
+    } as Response;
+  }) as DaemonFetch & { calls: FetchCall[] };
+  fetch_impl.calls = calls;
+  return fetch_impl;
+}
+
+function header_value(headers: HeadersInit | undefined, name: string): string | undefined {
+  if (headers === undefined) return undefined;
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  const lower_name = name.toLowerCase();
+  if (Array.isArray(headers)) {
+    const entry = headers.find(([key]) => key.toLowerCase() === lower_name);
+    return entry?.[1];
+  }
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === lower_name)?.[1];
 }
 
 class MemoryStore implements MarkStore {

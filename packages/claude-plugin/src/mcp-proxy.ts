@@ -1,12 +1,14 @@
 import { createInterface } from "node:readline/promises";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { LOUPE_AUTH_SCHEME } from "@loupe/shared";
+import { fileURLToPath } from "node:url";
+import { isAbsolute, join, resolve } from "node:path";
 
 const DEFAULT_MCP_URL = "http://127.0.0.1:7373/mcp";
 const DEFAULT_TOKEN_PATH = join(homedir(), ".loupe", "token");
 const SERVER_FILE_PATH = join(homedir(), ".loupe", "server.json");
+const FILE_URL_PREFIX = "file://";
+const LOUPE_AUTH_SCHEME = "Bearer";
 
 export type ProxyOptions = {
   url: string;
@@ -49,12 +51,12 @@ export function parseProxyArgs(args: readonly string[]): ProxyOptions {
       if (!value) {
         throw new Error("Missing value for --token-path");
       }
-      tokenPath = value;
+      tokenPath = normalizeTokenPath(value);
       i += 1;
       continue;
     }
     if (arg.startsWith("--token-path=")) {
-      tokenPath = arg.slice("--token-path=".length);
+      tokenPath = normalizeTokenPath(arg.slice("--token-path=".length));
       if (!tokenPath) {
         throw new Error("Missing value for --token-path");
       }
@@ -64,6 +66,30 @@ export function parseProxyArgs(args: readonly string[]): ProxyOptions {
   }
 
   return tokenPath === undefined ? { url } : { url, tokenPath };
+}
+
+function normalizeTokenPath(path: string): string {
+  if (path.length === 0) {
+    return path;
+  }
+  if (path === "~") {
+    return homedir();
+  }
+  if (path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
+  }
+  if (path.startsWith(FILE_URL_PREFIX)) {
+    return fileURLToPath(path);
+  }
+  return path;
+}
+
+function resolveServerTokenPath(path: string): string {
+  const normalized = normalizeTokenPath(path);
+  if (isAbsolute(normalized)) {
+    return normalized;
+  }
+  return resolve(join(homedir(), ".loupe"), normalized);
 }
 
 async function readServerTokenPath(): Promise<string | undefined> {
@@ -84,7 +110,7 @@ async function readServerTokenPath(): Promise<string | undefined> {
     throw new Error(`Unable to parse Loupe server file: ${SERVER_FILE_PATH}`);
   }
 
-  return typeof parsed.token_path === "string" && parsed.token_path.length > 0 ? parsed.token_path : undefined;
+  return typeof parsed.token_path === "string" && parsed.token_path.length > 0 ? resolveServerTokenPath(parsed.token_path) : undefined;
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -128,9 +154,13 @@ export async function forwardJsonRpcMessage(url: string, token: string, message:
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Loupe daemon MCP request failed: HTTP ${response.status}${text ? ` ${text}` : ""}`);
+    throw new Error(`Loupe daemon MCP request failed: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}${text ? ` ${redactToken(text, token)}` : ""}`);
   }
   return text.length > 0 ? text : undefined;
+}
+
+function redactToken(text: string, token: string): string {
+  return token.length === 0 ? text : text.split(token).join("[redacted]");
 }
 
 export async function runMcpProxy(args: readonly string[] = process.argv.slice(2)): Promise<void> {
