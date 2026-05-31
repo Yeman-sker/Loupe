@@ -1,0 +1,26 @@
+export {
+  createServer,
+  ensureLoupeHome,
+  ensureToken,
+  parseBearerToken,
+  resolveLoupeHome,
+  serverStatusPathForHome,
+  tokenPathForHome,
+  writeServerStatus,
+  type LoupeHomeOptions,
+  type LoupeHttpServer,
+  type LoupeServerOptions,
+  type ServerStatusOptions,
+  type TokenOptions,
+} from "./server.js";
+export {
+  ensure,
+  parseCli,
+  probeHealth,
+  runCli,
+  serve,
+  type CliCommand,
+  type CliOptions,
+  type HealthProbe,
+  type RunCliOptions,
+} from "./cli.js";

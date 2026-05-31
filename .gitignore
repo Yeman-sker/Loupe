@@ -1,2 +1,4 @@
 opensource/
 .codegraph/
+node_modules/
+dist/
