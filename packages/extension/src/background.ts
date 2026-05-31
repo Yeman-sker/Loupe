@@ -1,6 +1,6 @@
 declare const chrome: unknown;
 
-import { is_extension_host_eligible, origin_permission_pattern, page_bridge_exposure } from "./content.js";
+import { origin_permission_pattern, page_bridge_exposure } from "./content.js";
 
 export const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
@@ -36,21 +36,16 @@ export type ChromeMessageSender = {
 };
 
 export type AuthorizationDecision =
-  | { ok: true; authorized: boolean; origin: string; origin_pattern: string }
-  | { ok: false; authorized: false; error: string };
+  | { ok: true; authorized: true; origin: string; origin_pattern: string }
+  | { ok: true; authorized: false; origin: string; origin_pattern: string; error?: string }
+  | { ok: false; authorized: false; error: string; origin?: string };
 
 export type OriginPermissionProbe = (origins: readonly string[]) => Promise<boolean>;
 
 export function origin_from_message_or_sender(message: unknown, sender: ChromeMessageSender): string | undefined {
-  if (is_record(message) && typeof message.origin === "string" && is_extension_host_eligible(message.origin)) return message.origin;
+  if (is_record(message) && typeof message.origin === "string") return origin_from_url_or_origin(message.origin);
   const sender_url = sender.tab?.url ?? sender.url;
-  if (typeof sender_url !== "string") return undefined;
-  try {
-    const url = new URL(sender_url);
-    return is_extension_host_eligible(url.origin) ? url.origin : undefined;
-  } catch {
-    return undefined;
-  }
+  return typeof sender_url === "string" ? origin_from_url_or_origin(sender_url) : undefined;
 }
 
 export async function decide_origin_authorization(
@@ -61,8 +56,16 @@ export async function decide_origin_authorization(
   const origin = origin_from_message_or_sender(message, sender);
   if (origin === undefined) return { ok: false, authorized: false, error: "No page origin available" };
   const pattern = origin_permission_pattern(origin);
-  if (pattern === undefined) return { ok: false, authorized: false, error: "Unsupported page origin" };
-  return { ok: true, authorized: await contains([pattern]), origin, origin_pattern: pattern };
+  if (pattern === undefined) return { ok: false, authorized: false, error: `Unsupported page origin: ${origin}`, origin };
+
+  try {
+    const authorized = await contains([pattern]);
+    return authorized
+      ? { ok: true, authorized: true, origin, origin_pattern: pattern }
+      : { ok: true, authorized: false, origin, origin_pattern: pattern };
+  } catch (error) {
+    return { ok: false, authorized: false, error: error_message(error), origin };
+  }
 }
 
 export async function request_origin_authorization(
@@ -73,7 +76,15 @@ export async function request_origin_authorization(
 ): Promise<AuthorizationDecision> {
   const decision = await decide_origin_authorization(message, sender, contains);
   if (!decision.ok || decision.authorized) return decision;
-  return { ...decision, authorized: await request([decision.origin_pattern]) };
+
+  try {
+    const authorized = await request([decision.origin_pattern]);
+    return authorized
+      ? { ok: true, authorized: true, origin: decision.origin, origin_pattern: decision.origin_pattern }
+      : { ...decision, authorized: false, error: "Origin permission request was denied" };
+  } catch (error) {
+    return { ok: false, authorized: false, error: error_message(error), origin: decision.origin };
+  }
 }
 
 export function service_worker_wake_state(now: string): Record<string, unknown> {
@@ -125,6 +136,15 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
 
     return false;
   });
+}
+
+function origin_from_url_or_origin(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    return url.origin === "null" ? `${url.protocol}//${url.host}` : url.origin;
+  } catch {
+    return undefined;
+  }
 }
 
 function is_record(value: unknown): value is Record<string, unknown> {

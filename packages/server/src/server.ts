@@ -1,9 +1,9 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, open, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   assert_annotation,
   assert_storage_envelope,
@@ -74,6 +74,7 @@ type RequestContext = {
   port: number;
   token: string;
   version: string;
+  home: string;
   store: Promise<MarkStore>;
 };
 
@@ -81,10 +82,10 @@ const DEFAULT_VERSION = "0.0.0";
 const MAX_BODY_BYTES = 1_048_576;
 
 export function resolveLoupeHome(home?: string): string {
-  if (!home || home === "~/.loupe") return join(homedir(), ".loupe");
-  if (home === "~") return homedir();
-  if (home.startsWith("~/")) return join(homedir(), home.slice(2));
-  return home;
+  if (!home || home === "~/.loupe") return resolve(homedir(), ".loupe");
+  if (home === "~") return resolve(homedir());
+  if (home.startsWith("~/")) return resolve(homedir(), home.slice(2));
+  return resolve(home);
 }
 
 export async function ensureLoupeHome(options: LoupeHomeOptions = {}): Promise<string> {
@@ -101,8 +102,20 @@ export function serverStatusPathForHome(home: string): string {
   return join(home, "server.json");
 }
 
-function marksPathForHome(home: string): string {
+export function marksPathForHome(home: string): string {
   return join(home, "marks.json");
+}
+
+export function serverLogPathForHome(home: string): string {
+  return join(home, "server.log");
+}
+
+export async function canonicalLoupeHome(home: string): Promise<string> {
+  return realpath(resolveLoupeHome(home));
+}
+
+export async function homeHashForHome(home: string): Promise<string> {
+  return createHash("sha256").update(await canonicalLoupeHome(home), "utf8").digest("base64url");
 }
 
 export async function ensureToken(options: TokenOptions = {}): Promise<string> {
@@ -157,7 +170,9 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
   const store = loadMarkStore(home);
 
   const server = createNodeServer((request, response) => {
-    void handleRequest(request, response, { port, token, version, store });
+    void handleRequest(request, response, { port, token, version, home, store }).catch((error: unknown) => {
+      void handleRequestError(request, response, home, error);
+    });
   }) as LoupeHttpServer;
 
   server.loupe = { port, token, home, version };
@@ -175,13 +190,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       version: context.version,
       port: context.port,
       requires_auth: true,
+      home_hash: await homeHashForHome(context.home),
     };
-    if (store.warnings.length > 0) payload.warnings = store.warnings;
+    if (store.warnings.length > 0) {
+      payload.warnings = store.warnings;
+      for (const warning of store.warnings) await appendDaemonLog(store.home, "WARN", `health warning ${warning.code}${warning.file === undefined ? "" : ` file=${warning.file}`}: ${warning.message}`);
+    }
     writeJson(response, 200, payload);
     return;
   }
 
   if (isProtectedPath(url.pathname) && !isAuthorized(request, context.token)) {
+    await appendDaemonLog(context.home, "WARN", `unauthorized ${request.method ?? "UNKNOWN"} ${url.pathname}`);
     writeJson(response, 401, { error: { code: error_codes.unauthorized, message: "Authorization bearer token is required." } });
     return;
   }
@@ -193,6 +213,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
   if (url.pathname === "/mcp") {
     if (request.method !== "POST") {
+      await appendDaemonLog(context.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`);
       writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "MCP endpoint requires POST." } });
       return;
     }
@@ -200,6 +221,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
 
+  await appendDaemonLog(context.home, "WARN", `not found ${request.method ?? "UNKNOWN"} ${url.pathname}`);
   writeJson(response, 404, { error: { code: error_codes.not_found, message: "Not found." } });
 }
 
@@ -269,12 +291,14 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
   try {
     rpc = JSON.parse(await readRequestBody(request)) as JsonRpcRequest;
   } catch {
+    await appendDaemonLog(store.home, "ERROR", "mcp parse error");
     writeJson(response, 400, jsonRpcError(null, -32700, "Parse error"));
     return;
   }
 
   const id = isJsonRpcId(rpc.id) ? rpc.id : null;
   if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
+    await appendDaemonLog(store.home, "ERROR", "mcp invalid request");
     writeJson(response, 200, jsonRpcError(id, -32600, "Invalid Request"));
     return;
   }
@@ -290,6 +314,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     const args = isRecord(call?.arguments) ? call.arguments : {};
     const result = await callMcpTool(store, name, args);
     if ("error" in result) {
+      await appendDaemonLog(store.home, "ERROR", `mcp tools/call failed ${result.error.code}: ${result.error.message}`);
       writeJson(response, 200, jsonRpcError(id, -32000, result.error.message, result.error));
       return;
     }
@@ -297,6 +322,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     return;
   }
 
+  await appendDaemonLog(store.home, "ERROR", `mcp method not found ${rpc.method}`);
   writeJson(response, 200, jsonRpcError(id, -32601, "Method not found"));
 }
 
@@ -346,7 +372,10 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
     if (request.method === "GET") {
       const result = listMarks(store, Object.fromEntries(url.searchParams));
       if (result.kind === "ok") writeJson(response, 200, result.value);
-      else writeJson(response, result.error.code === error_codes.multi_project ? 409 : 400, { error: result.error });
+      else {
+        await appendDaemonLog(store.home, "ERROR", `marks list failed ${result.error.code}: ${result.error.message}`);
+        writeJson(response, result.error.code === error_codes.multi_project ? 409 : 400, { error: result.error });
+      }
       return;
     }
     if (request.method === "POST") {
@@ -355,6 +384,7 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
         body = JSON.parse(await readRequestBody(request)) as unknown;
         assert_annotation(body);
       } catch {
+        await appendDaemonLog(store.home, "ERROR", "marks invalid annotation");
         writeJson(response, 400, { error: { code: error_codes.invalid_request, message: "Expected Annotation wire contract." } });
         return;
       }
@@ -370,23 +400,33 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
     if (request.method === "GET" && path.action === undefined) {
       const result = findAssertedMark(store, args, "read");
       if (result.kind === "ok") writeJson(response, 200, { mark: toAgentMark(result.mark) });
-      else writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      else {
+        await appendDaemonLog(store.home, "ERROR", `marks get failed ${result.error.code}: ${result.error.message}`);
+        writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      }
       return;
     }
     if (request.method === "POST" && path.action === "resolve") {
       const result = await resolveMark(store, args);
       if (result.kind === "ok") writeJson(response, 200, result.value);
-      else writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      else {
+        await appendDaemonLog(store.home, "ERROR", `marks resolve failed ${result.error.code}: ${result.error.message}`);
+        writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      }
       return;
     }
     if (request.method === "DELETE" && path.action === undefined) {
       const result = await deleteMark(store, args);
       if (result.kind === "ok") writeJson(response, 200, result.value);
-      else writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      else {
+        await appendDaemonLog(store.home, "ERROR", `marks delete failed ${result.error.code}: ${result.error.message}`);
+        writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
+      }
       return;
     }
   }
 
+  await appendDaemonLog(store.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`);
   writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Unsupported marks operation." } });
 }
 
@@ -631,6 +671,24 @@ function writeJson(response: ServerResponse, statusCode: number, payload: unknow
     "content-length": Buffer.byteLength(body),
   });
   response.end(body);
+}
+
+async function handleRequestError(request: IncomingMessage, response: ServerResponse, home: string, error: unknown): Promise<void> {
+  await appendDaemonLog(home, "ERROR", `request failed ${request.method ?? "UNKNOWN"} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}: ${error instanceof Error ? error.name : "non-error throw"}`);
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  writeJson(response, 500, { error: { code: error_codes.internal_error, message: "Internal server error." } });
+}
+
+async function appendDaemonLog(home: string, level: "ERROR" | "WARN", message: string): Promise<void> {
+  try {
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    await appendFile(serverLogPathForHome(home), `${new Date().toISOString()} ${level} ${message}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // Daemon logs are best-effort diagnostics only.
+  }
 }
 
 function jsonRpcError(id: string | number | null, code: number, message: string, data?: JsonValue): unknown {

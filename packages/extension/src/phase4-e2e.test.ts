@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { LOUPE_AUTH_SCHEME, storage_keys, type AgentMark, type Annotation, type Locator, type ProjectScopeWithUrl, type ResolveResult } from "@loupe/shared";
 import {
   LOUPE_EXTENSION_ROOT_ID,
+  bootstrap_content_root,
   install_content_root,
   is_picker_candidate,
   origin_permission_pattern,
@@ -51,7 +52,7 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
   it("MV3 content root is closed, hidden, and excluded from picker candidates", () => {
     const document = new FakeDocument();
 
-    assert.equal(install_content_root(document), true);
+    assert.equal(install_content_root(document, { authorized: true }), true);
     assert.equal(install_content_root(document), false);
 
     const root = document.getElementById(LOUPE_EXTENSION_ROOT_ID);
@@ -64,6 +65,114 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.equal(is_picker_candidate(root), false);
     assert.equal(is_picker_candidate(new FakeElement("button")), true);
     assert.equal(is_picker_candidate(new FakeElement("button", { root: { host: root } })), false);
+  });
+
+  it("MV3 runtime bootstrap waits for host authorization before content root injection", async () => {
+    const document = new FakeDocument();
+    const messages: unknown[] = [];
+    const chrome = {
+      runtime: {
+        sendMessage(message: unknown, response_callback: (response: unknown) => void) {
+          messages.push(message);
+          response_callback({ ok: true, authorized: false, origin: "https://app.example.test", origin_pattern: "https://app.example.test/*" });
+        },
+      },
+    };
+
+    assert.equal(await bootstrap_content_root({ chrome, document, location: { origin: "https://app.example.test" } }), false);
+
+    assert.deepEqual(messages, [{ type: "loupe.origin_auth.get", origin: "https://app.example.test" }]);
+    assert.equal(document.getElementById(LOUPE_EXTENSION_ROOT_ID), null);
+  });
+
+  it("MV3 runtime bootstrap injects content root only after host authorization", async () => {
+    const document = new FakeDocument();
+    const chrome = {
+      runtime: {
+        sendMessage(message: unknown, response_callback: (response: unknown) => void) {
+          assert.deepEqual(message, { type: "loupe.origin_auth.get", origin: "https://app.example.test" });
+          response_callback({ ok: true, authorized: true, origin: "https://app.example.test", origin_pattern: "https://app.example.test/*" });
+        },
+      },
+    };
+
+    assert.equal(await bootstrap_content_root({ chrome, document, location: { origin: "https://app.example.test" } }), true);
+    assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
+  });
+
+  it("MV3 manifest content script gates root injection on authorized origin response", async () => {
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
+    assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/content.js"]);
+    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
+    const source = await readFile(content_path, "utf8");
+    const bootstrap_body = function_body(source, "bootstrapAuthorizedContent");
+    const start_body = function_body(source, "startAuthorizedContent");
+
+    assert.match(source, /if \(!canBootstrapContentRuntime\(\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
+    assert.match(bootstrap_body, /runtimeMessage\(\{ type: MESSAGE_GET_AUTH, origin: location\.origin \}\)/);
+    assert.match(bootstrap_body, /if \(!isAuthorizedOriginResponse\(response\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
+    assert.doesNotMatch(source.slice(0, source.indexOf("function startAuthorizedContent")), /document\.createElement\("div"\)|document\.documentElement\.append\(host\)|shadow\.append\(style, app\)/);
+    assert.match(start_body, /document\.createElement\("div"\)/);
+    assert.match(start_body, /document\.documentElement\.append\(host\)/);
+    assert.match(start_body, /state\.authorized = true/);
+  });
+
+  it("MV3 manifest content script no-ops before authorized runtime response", async () => {
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
+    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
+    const source = await readFile(content_path, "utf8");
+    const document = new FakeDocument();
+    const messages: unknown[] = [];
+    const context = vm.createContext({
+      chrome: {
+        runtime: {
+          sendMessage(message: unknown, response_callback: (response: unknown) => void) {
+            messages.push(message);
+            response_callback({ ok: true, authorized: false });
+          },
+        },
+      },
+      document,
+      location: { origin: "https://app.example.test" },
+    });
+
+    new vm.Script(source, { filename: content_path }).runInContext(context);
+    await flush_promises(2);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ type: "loupe.origin_auth.get", origin: "https://app.example.test" }]);
+    assert.equal(document.getElementById(LOUPE_EXTENSION_ROOT_ID), null);
+  });
+
+  it("MV3 manifest content script injects only after authorized runtime response", async () => {
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
+    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
+    const source = await readFile(content_path, "utf8");
+    const document = new FakeDocument();
+    const context = vm.createContext({
+      chrome: {
+        runtime: {
+          sendMessage(_message: unknown, response_callback: (response: unknown) => void) {
+            response_callback({ ok: true, authorized: true });
+          },
+        },
+        storage: { local: { get: async () => ({}), set: async () => undefined } },
+      },
+      document,
+      history: { pushState() {}, replaceState() {} },
+      location: { origin: "https://app.example.test", pathname: "/dashboard", search: "", hash: "", host: "app.example.test" },
+      MutationObserver: undefined,
+      queueMicrotask,
+      setTimeout,
+      crypto: { getRandomValues: (bytes: Uint8Array) => bytes.fill(7) },
+      clearTimeout,
+      URLSearchParams,
+      window: { addEventListener() {}, innerWidth: 1440, innerHeight: 900, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    });
+
+    new vm.Script(source, { filename: content_path }).runInContext(context);
+    await flush_promises(4);
+
+    assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
   });
 
   it("MV3 extension host authorization helper grants only eligible http origins", async () => {
@@ -93,7 +202,7 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.equal(requested.authorized, true);
 
     const denied = await decide_origin_authorization({ origin: "file://tmp/index.html" }, {}, async () => true);
-    assert.deepEqual(denied, { ok: false, authorized: false, error: "No page origin available" });
+    assert.deepEqual(denied, { ok: false, authorized: false, origin: "file://tmp", error: "Unsupported page origin: file://tmp" });
   });
 
   it("MV3 manifest content script defers route recovery until DOM quiet/timeout and guards stale route commits", async () => {
@@ -397,6 +506,8 @@ class FakeElement {
   id = "";
   hidden = false;
   textContent = "";
+  className = "";
+  innerHTML = "";
   readonly dataset: Record<string, string | undefined> = {};
   readonly style: Record<string, string> = {};
   readonly shadow_modes: string[] = [];
@@ -407,6 +518,24 @@ class FakeElement {
     this.shadow_modes.push(init.mode);
     return { append() {} };
   }
+
+  addEventListener() {}
+
+  append() {}
+
+  querySelector(selector: string): FakeElement | null {
+    if (selector === ".row" || selector === ".status") return new FakeElement(selector);
+    if (selector === "button") return null;
+    return null;
+  }
+
+  querySelectorAll(): FakeElement[] {
+    return [];
+  }
+
+  remove() {}
+
+  setAttribute() {}
 
   getRootNode(): unknown {
     return this.options.root;
@@ -424,6 +553,10 @@ class FakeDocument {
   createElement(tag: string): FakeElement {
     return new FakeElement(tag);
   }
+
+  addEventListener() {}
+
+  removeEventListener() {}
 
   append(node: unknown): void {
     if (node instanceof FakeElement && node.id !== "") this.element_by_id = { ...this.element_by_id, [node.id]: node };

@@ -2,7 +2,6 @@
   const ROOT_ID = "loupe-extension-root";
   const SCHEMA_VERSION = 1;
   const MESSAGE_GET_AUTH = "loupe.origin_auth.get";
-  const MESSAGE_REQUEST_AUTH = "loupe.origin_auth.request";
   const SESSION_ID_KEY = "loupe:v1:extension:session_id";
   const INTERACTIVE_SELECTOR = [
     "a[href]",
@@ -61,9 +60,17 @@
     summary: "button",
   });
 
-  if (document.getElementById(ROOT_ID)) return;
+  if (!canBootstrapContentRuntime() || document.getElementById(ROOT_ID)) return;
+  void bootstrapAuthorizedContent();
 
-  const state = {
+  async function bootstrapAuthorizedContent() {
+    const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
+    if (!isAuthorizedOriginResponse(response) || document.getElementById(ROOT_ID)) return;
+    startAuthorizedContent();
+  }
+
+  function startAuthorizedContent() {
+    const state = {
     authorized: false,
     fullAppInitialized: false,
     picking: false,
@@ -149,37 +156,15 @@
   boot();
 
   function boot() {
+    state.authorized = true;
     state.sessionId = getOrCreateSessionId();
     state.project = projectScope();
-    document.addEventListener("keydown", onAuthorizationKeyDown, true);
-    renderShell("Checking host authorization…");
-    void checkAuthorization();
-  }
-
-  async function checkAuthorization() {
-    const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
-    state.authorized = Boolean(response?.authorized);
-    if (state.authorized) await initializeFullPickerApp();
-    else renderShell();
-  }
-
-  async function requestAuthorization() {
-    renderShell("Requesting host authorization…");
-    const response = await runtimeMessage({ type: MESSAGE_REQUEST_AUTH, origin: location.origin });
-    state.authorized = Boolean(response?.authorized);
-    if (state.authorized) {
-      await initializeFullPickerApp();
-      renderShell("Authorized. Press Alt+L to pick.");
-      startPicking();
-    } else {
-      renderShell("Authorization was not granted.");
-    }
+    void initializeFullPickerApp().then(() => renderShell());
   }
 
   async function initializeFullPickerApp() {
     if (state.fullAppInitialized) return;
     state.fullAppInitialized = true;
-    document.removeEventListener("keydown", onAuthorizationKeyDown, true);
     document.addEventListener("keydown", onDocumentKeyDown, true);
     document.addEventListener("pointermove", onPointerMove, true);
     document.addEventListener("pointerdown", blockHostPointerWhilePicking, true);
@@ -193,14 +178,6 @@
     window.addEventListener("scroll", repositionPins, { passive: true, capture: true });
     observeDomForRecovery();
     await loadMarks();
-  }
-
-  function onAuthorizationKeyDown(event) {
-    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.code === "KeyL") {
-      event.preventDefault();
-      event.stopPropagation();
-      renderShell("Authorize this origin before picking.");
-    }
   }
 
   function renderShell(status = "") {
@@ -217,16 +194,10 @@
     `;
     const row = box.querySelector(".row");
     const statusEl = box.querySelector(".status");
-    if (state.authorized) {
-      row.append(button(state.picking ? "Exit picker" : "Pick element", state.picking ? stopPicking : startPicking));
-      row.append(button("View all", openPanel, "secondary"));
-      row.append(button("Copy Markdown", () => copyMarkdown(), "ghost"));
-      statusEl.textContent = status || `${openMarks().length} open local mark${openMarks().length === 1 ? "" : "s"}.`;
-    } else {
-      const cta = button(`Authorize ${location.host}`, requestAuthorization);
-      row.append(cta);
-      statusEl.textContent = status || "Loupe needs host access before picking on this origin.";
-    }
+    row.append(button(state.picking ? "Exit picker" : "Pick element", state.picking ? stopPicking : startPicking));
+    row.append(button("View all", openPanel, "secondary"));
+    row.append(button("Copy Markdown", () => copyMarkdown(), "ghost"));
+    statusEl.textContent = status || `${openMarks().length} open local mark${openMarks().length === 1 ? "" : "s"}.`;
     app.append(box);
   }
 
@@ -1426,13 +1397,29 @@
     return item;
   }
 
+  }
+
+  function canBootstrapContentRuntime() {
+    return typeof document !== "undefined"
+      && typeof location !== "undefined"
+      && typeof location.origin === "string"
+      && typeof chrome !== "undefined"
+      && chrome.runtime !== undefined
+      && typeof chrome.runtime.sendMessage === "function";
+  }
+
+  function isAuthorizedOriginResponse(value) {
+    return Boolean(value && value.ok === true && value.authorized === true);
+  }
+
   function runtimeMessage(message) {
     return new Promise((resolveMessage) => {
       try {
-        chrome.runtime.sendMessage(message, (response) => {
+        const maybePromise = chrome.runtime.sendMessage(message, (response) => {
           if (chrome.runtime.lastError) resolveMessage({ ok: false, error: chrome.runtime.lastError.message });
           else resolveMessage(response);
         });
+        if (maybePromise && typeof maybePromise.then === "function") maybePromise.then(resolveMessage, () => resolveMessage({ ok: false }));
       } catch (error) {
         resolveMessage({ ok: false, error: error instanceof Error ? error.message : String(error) });
       }

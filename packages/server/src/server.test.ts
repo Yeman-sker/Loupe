@@ -1,13 +1,13 @@
 import { after, before, describe, it } from "node:test";
 import { createServer as createNodeServer, type Server as NodeServer } from "node:http";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe/shared";
-import { ensure, parseCli, serve } from "./cli.js";
-import { createServer, ensureToken, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
+import { ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
+import { createServer, ensureToken, homeHashForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
 const originCases: ReadonlyArray<{ name: string; origin?: string }> = [
   { name: "absent Origin" },
@@ -61,6 +61,9 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.version, "phase-0-test");
     assert.equal(body.requires_auth, true);
     assert.equal(typeof body.port, "number");
+    assert.equal(body.home_hash, await homeHashForHome(home));
+    assert.equal(body.home, undefined);
+    assert.equal(body.token, undefined);
   });
 
   for (const originCase of originCases) {
@@ -487,6 +490,10 @@ describe("Loupe Phase 3 marks store health", () => {
         },
       ]);
       assert.match(body.warnings[0].file, /^marks\.json\.corrupted\./);
+
+      const rawLog = await readFile(serverLogPathForHome(home), "utf8");
+      assert.match(rawLog, /WARN health warning CORRUPT_MARKS_JSON/);
+      assert.doesNotMatch(rawLog, new RegExp(token));
     } finally {
       if (server.listening) await closeServer(server);
       await rm(home, { recursive: true, force: true });
@@ -543,9 +550,13 @@ describe("Loupe Phase 3 marks store health", () => {
 });
 
 describe("Loupe Phase 0 CLI", () => {
-  it("defaults serve and ensure to the Loupe default port", () => {
+  it("defaults CLI commands to the Loupe default port", () => {
     assert.deepEqual(parseCli(["serve"]), { command: "serve", port: LOUPE_DEFAULT_PORT });
     assert.deepEqual(parseCli(["ensure"]), { command: "ensure", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["init"]), { command: "init", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["status"]), { command: "status", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["logs"]), { command: "logs", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["status", "--port", "41234", "--home", "/tmp/loupe-test"]), { command: "status", port: 41234, home: "/tmp/loupe-test" });
   });
 
   it("defaults direct serve calls to the Loupe default port", async () => {
@@ -605,7 +616,338 @@ describe("Loupe Phase 0 CLI", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("initializes home, token, server metadata, and prints next steps without a daemon", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    try {
+      assert.equal(await init({ home, port: 9 }, stdout), 0);
+      assert.ok((await readFile(tokenPathForHome(home), "utf8")).trim().length > 0);
+      assert.deepEqual(JSON.parse(await readFile(serverStatusPathForHome(home), "utf8")).port, 9);
+      assert.match(stdout.text, /Loupe initialized/);
+      assert.match(stdout.text, /\/loupe:marks/);
+      assert.match(stdout.text, /Daemon: not running yet/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("initializes successfully when running daemon home matches requested home", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    const server = createServer({ home, port: 0, token: "phase-5-init-match-token", version: "phase-5-init-match" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      assert.equal(await init({ home, port: address.port }, stdout), 0);
+      assert.ok((await readFile(tokenPathForHome(home), "utf8")).trim().length > 0);
+      assert.equal(JSON.parse(await readFile(serverStatusPathForHome(home), "utf8")).port, 0);
+      assert.match(stdout.text, /Loupe initialized/);
+      assert.match(stdout.text, /Daemon: running on port/);
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("treats equivalent relative home spellings as the same running daemon home", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "loupe-server-cwd-"));
+    const daemonHomeSpelling = ".loupe";
+    const requestedHomeSpelling = "././.loupe";
+    const differentHome = ".loupe-other";
+    const stdout = new MemoryStream();
+    const originalCwd = process.cwd();
+    process.chdir(cwd);
+    const canonicalHome = resolve(process.cwd(), ".loupe");
+    const server = createServer({ home: daemonHomeSpelling, port: 0, token: "phase-5-canonical-home-token", version: "phase-5-canonical-home" });
+    try {
+      assert.equal(resolveLoupeHome(daemonHomeSpelling), canonicalHome);
+      assert.equal(resolveLoupeHome(requestedHomeSpelling), canonicalHome);
+      await mkdir(canonicalHome, { recursive: true });
+      await mkdir(differentHome);
+      assert.equal(await homeHashForHome(daemonHomeSpelling), await homeHashForHome(requestedHomeSpelling));
+      assert.notEqual(await homeHashForHome(daemonHomeSpelling), await homeHashForHome(differentHome));
+
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/health`);
+      const health = await response.json() as Record<string, unknown>;
+      assert.equal(health.home_hash, await homeHashForHome(requestedHomeSpelling));
+      assert.equal(health.home, undefined);
+      assert.equal(health.token, undefined);
+
+      assert.equal(await init({ home: requestedHomeSpelling, port: address.port }, stdout), 0);
+      assert.ok((await readFile(tokenPathForHome(requestedHomeSpelling), "utf8")).trim().length > 0);
+      assert.equal(JSON.parse(await readFile(serverStatusPathForHome(requestedHomeSpelling), "utf8")).port, 0);
+      assert.match(stdout.text, /Loupe initialized/);
+      assert.match(stdout.text, /Daemon: running on port/);
+    } finally {
+      process.chdir(originalCwd);
+      if (server.listening) await closeServer(server);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it("treats symlinked and real home paths as the same running daemon home", async (test) => {
+    const parent = await mkdtemp(join(tmpdir(), "loupe-server-symlink-"));
+    const realHome = join(parent, "real-home");
+    const linkedHome = join(parent, "linked-home");
+    const differentHome = join(parent, "different-home");
+    const stdout = new MemoryStream();
+    let server: LoupeHttpServer | undefined;
+    try {
+      await mkdir(realHome);
+      await mkdir(differentHome);
+      try {
+        await symlink(realHome, linkedHome, "dir");
+      } catch (error) {
+        if (isNodeErrorCode(error, "EPERM") || isNodeErrorCode(error, "EACCES") || isNodeErrorCode(error, "ENOTSUP")) {
+          test.skip(`symlinked Loupe home assertion skipped: ${error.code}`);
+          return;
+        }
+        throw error;
+      }
+
+      assert.equal(await homeHashForHome(linkedHome), await homeHashForHome(realHome));
+      assert.notEqual(await homeHashForHome(linkedHome), await homeHashForHome(differentHome));
+
+      server = createServer({ home: linkedHome, port: 0, token: "phase-5-symlink-home-token", version: "phase-5-symlink-home" });
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/health`);
+      const health = await response.json() as Record<string, unknown>;
+      assert.equal(health.home_hash, await homeHashForHome(realHome));
+      assert.equal(health.home, undefined);
+      assert.equal(health.token, undefined);
+
+      assert.equal(await init({ home: realHome, port: address.port }, stdout), 0);
+      assert.ok((await readFile(tokenPathForHome(realHome), "utf8")).trim().length > 0);
+      assert.equal(JSON.parse(await readFile(serverStatusPathForHome(realHome), "utf8")).port, 0);
+      assert.match(stdout.text, /Loupe initialized/);
+      assert.match(stdout.text, /Daemon: running on port/);
+    } finally {
+      if (server?.listening) await closeServer(server);
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+  it("fails init clearly when running daemon home differs from requested home", async () => {
+    const daemonHome = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const requestedHome = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    const server = createServer({ home: daemonHome, port: 0, token: "phase-5-init-mismatch-token", version: "phase-5-init-mismatch" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/health`);
+      const health = await response.json() as Record<string, unknown>;
+      assert.equal(health.home_hash, await homeHashForHome(daemonHome));
+      assert.equal(health.home, undefined);
+      assert.equal(health.token, undefined);
+
+      assert.equal(await init({ home: requestedHome, port: address.port }, stdout), 1);
+      assert.match(stdout.text, /different or unverifiable home/);
+      assert.match(stdout.text, /Repair:/);
+      assert.doesNotMatch(stdout.text, /Loupe initialized/);
+      await assert.rejects(readFile(tokenPathForHome(requestedHome), "utf8"), { code: "ENOENT" });
+      await assert.rejects(readFile(serverStatusPathForHome(requestedHome), "utf8"), { code: "ENOENT" });
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(daemonHome, { recursive: true, force: true });
+      await rm(requestedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reports healthy status when running daemon home matches requested home", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    const server = createServer({ home, port: 0, token: "phase-5-status-match-token", version: "phase-5-status-match" });
+    try {
+      await ensureToken({ home });
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      await writeServerStatus({ home, port: address.port });
+
+      assert.equal(await status({ home, port: address.port }, stdout), 0);
+      assert.match(stdout.text, /Loupe home:/);
+      assert.match(stdout.text, /Daemon: Loupe running on port/);
+      assert.match(stdout.text, /Token: present/);
+      assert.doesNotMatch(stdout.text, /not for requested home/);
+      assert.doesNotMatch(stdout.text, /different from or unverifiable/);
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reports healthy status for symlink-equivalent requested home", async (test) => {
+    const parent = await mkdtemp(join(tmpdir(), "loupe-server-status-symlink-"));
+    const realHome = join(parent, "real-home");
+    const linkedHome = join(parent, "linked-home");
+    const stdout = new MemoryStream();
+    let server: LoupeHttpServer | undefined;
+    try {
+      await mkdir(realHome);
+      try {
+        await symlink(realHome, linkedHome, "dir");
+      } catch (error) {
+        if (isNodeErrorCode(error, "EPERM") || isNodeErrorCode(error, "EACCES") || isNodeErrorCode(error, "ENOTSUP")) {
+          test.skip(`symlinked Loupe status assertion skipped: ${error.code}`);
+          return;
+        }
+        throw error;
+      }
+
+      assert.equal(await homeHashForHome(linkedHome), await homeHashForHome(realHome));
+      server = createServer({ home: linkedHome, port: 0, token: "phase-5-status-symlink-token", version: "phase-5-status-symlink" });
+      await ensureToken({ home: realHome });
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      await writeServerStatus({ home: realHome, port: address.port });
+
+      assert.equal(await status({ home: realHome, port: address.port }, stdout), 0);
+      assert.match(stdout.text, /Daemon: Loupe running on port/);
+      assert.match(stdout.text, /Token: present/);
+      assert.doesNotMatch(stdout.text, /not for requested home/);
+      assert.doesNotMatch(stdout.text, /different from or unverifiable/);
+    } finally {
+      if (server?.listening) await closeServer(server);
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("fails status clearly when running daemon home differs from requested home with local metadata", async () => {
+    const daemonHome = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const requestedHome = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    const server = createServer({ home: daemonHome, port: 0, token: "phase-5-status-mismatch-token", version: "phase-5-status-mismatch" });
+    try {
+      await ensureToken({ home: requestedHome });
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      await writeServerStatus({ home: requestedHome, port: address.port });
+      assert.notEqual(await homeHashForHome(daemonHome), await homeHashForHome(requestedHome));
+
+      assert.equal(await status({ home: requestedHome, port: address.port }, stdout), 1);
+      assert.match(stdout.text, /Loupe home:/);
+      assert.match(stdout.text, /not for requested home/);
+      assert.match(stdout.text, /different from or unverifiable/);
+      assert.match(stdout.text, /Repair: stop that daemon/);
+      assert.match(stdout.text, /Token: present/);
+      assert.match(stdout.text, /Server status: present/);
+      assert.doesNotMatch(stdout.text, /Daemon: Loupe running on port \d+\./);
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(daemonHome, { recursive: true, force: true });
+      await rm(requestedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reports missing token with non-zero repair guidance", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    try {
+      assert.equal(await status({ home, port: 9 }, stdout), 1);
+      assert.match(stdout.text, /Token: missing/);
+      assert.match(stdout.text, /Repair: run loupe init/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a non-Loupe occupied port with non-zero repair guidance", async () => {
+    const dummy = createNodeServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, name: "not-loupe" }));
+    });
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    try {
+      await ensureToken({ home });
+      await listenEphemeral(dummy);
+      const address = dummy.address() as AddressInfo;
+      assert.equal(await status({ home, port: address.port }, stdout), 1);
+      assert.match(stdout.text, /occupied by a non-Loupe service/);
+      assert.match(stdout.text, /stop that service/);
+    } finally {
+      if (dummy.listening) await closeServer(dummy);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reports missing and daemon-written logs without dumping the whole file", async () => {
+    const missingHome = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    const stderr = new MemoryStream();
+    try {
+      assert.equal(await logs({ home: missingHome }, stdout, stderr), 1);
+      assert.match(stderr.text, /No Loupe server log found/);
+    } finally {
+      await rm(missingHome, { recursive: true, force: true });
+    }
+
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const token = "phase-5-log-token";
+    const server = createServer({ home, port: 0, token, version: "phase-5-log-test" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/marks`);
+      assert.equal(response.status, 401);
+
+      const rawLog = await readFile(serverLogPathForHome(home), "utf8");
+      assert.match(rawLog, /WARN unauthorized GET \/v1\/marks/);
+      assert.doesNotMatch(rawLog, new RegExp(token));
+
+      const present = new MemoryStream();
+      assert.equal(await logs({ home }, present, new MemoryStream()), 2);
+      assert.match(present.text, /Recent Loupe server errors\/warnings/);
+      assert.match(present.text, /WARN unauthorized GET \/v1\/marks/);
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces corrupt marks.json as warning semantics", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const homeHash = await homeHashForHome(home);
+    const loupe = createNodeServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, name: LOUPE_DAEMON_NAME, version: "phase-5-status-test", port: (loupe.address() as AddressInfo).port, requires_auth: true, home_hash: homeHash }));
+    });
+    const stdout = new MemoryStream();
+    try {
+      await ensureToken({ home });
+      await listenEphemeral(loupe);
+      const address = loupe.address() as AddressInfo;
+      await writeServerStatus({ home, port: address.port });
+      await writeFile(join(home, "marks.json"), "{not-json", "utf8");
+      assert.equal(await status({ home, port: address.port }, stdout), 2);
+      assert.match(stdout.text, /Marks store: warning corrupt JSON/);
+      assert.match(stdout.text, /Repair: back up or remove marks\.json/);
+    } finally {
+      if (loupe.listening) await closeServer(loupe);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("routes runCli output streams for status diagnostics", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    try {
+      assert.equal(await runCli({ argv: ["status", "--home", home, "--port", "9"], stdout, stderr: new MemoryStream() }), 1);
+      assert.match(stdout.text, /Loupe home:/);
+      assert.match(stdout.text, /Token: missing/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
+
+function isNodeErrorCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
+}
 
 function authHeaders(token: string): HeadersInit {
   return { authorization: `Bearer ${token}` };
@@ -807,6 +1149,15 @@ function assertNoLeakedKeys(value: unknown, disallowed: readonly string[]): void
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+class MemoryStream {
+  text = "";
+
+  write(chunk: string): boolean {
+    this.text += chunk;
+    return true;
+  }
 }
 
 async function listenEphemeral(server: NodeServer): Promise<void> {

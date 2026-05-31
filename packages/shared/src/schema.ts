@@ -1400,6 +1400,7 @@ export type HealthPayload = {
   version: string;
   port: number;
   requires_auth: true;
+  home_hash?: string;
 };
 
 export type ServerStatusFile = {

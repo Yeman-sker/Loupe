@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "loupe-server": "./src/cli.ts"
+    "loupe-server": "./src/cli.ts",
+    "loupe": "./src/cli.ts"
   },
   "exports": {
     ".": {
