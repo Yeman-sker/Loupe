@@ -4,9 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc -p tsconfig.json"
+    "check": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@loupe/shared": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^22.15.29",
+    "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
 }

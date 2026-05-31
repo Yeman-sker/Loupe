@@ -2,16 +2,17 @@
   "manifest_version": 3,
   "name": "Loupe",
   "version": "0.0.0",
-  "description": "Loupe Phase 0 placeholder extension.",
-  "permissions": ["storage"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "description": "Loupe in-page DOM annotation capture.",
+  "permissions": ["activeTab", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": [],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/content.js"],
       "run_at": "document_idle"
     }
