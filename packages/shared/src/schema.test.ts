@@ -137,6 +137,68 @@ describe("Loupe Phase 0 schema and storage contracts", () => {
     }
   });
 
+  it("locator evidence validators reject malformed optional evidence fields", () => {
+    const validLocator = sampleLocator();
+    const validAnnotation = sampleAnnotation();
+    assert.equal(is_locator(validLocator), true);
+    assert.equal(is_annotation(validAnnotation), true);
+
+    const malformedEvidenceFields: Array<[string, unknown]> = [
+      ["stable_attrs", { "data-testid": 42 }],
+      ["classes", { stable: ["save", 7], total: 2 }],
+      ["classes", { stable: ["save"], total: "1" }],
+      ["text", { normalized: "Save", hash: "hash-save", length: "4" }],
+      ["text", { normalized: "Save", hash: 123, length: 4 }],
+    ];
+
+    for (const [field, malformedValue] of malformedEvidenceFields) {
+      const locator = {
+        ...sampleLocator(),
+        evidence: { ...sampleLocator().evidence, [field]: malformedValue },
+      };
+      const annotation = {
+        ...sampleAnnotation(),
+        target: {
+          ...sampleAnnotation().target,
+          locator,
+        },
+      };
+
+      assert.equal(is_locator(locator), false, field);
+      assert.equal(is_annotation(annotation), false, field);
+    }
+  });
+
+  it("locator evidence validators reject camelCase evidence aliases even with snake_case fields present", () => {
+    const aliases: Array<[string, unknown]> = [
+      ["stableId", "save-button"],
+      ["accessibleName", "Save"],
+      ["accesssibleName", "Save"],
+      ["stableAttrs", { "data-testid": "save-button" }],
+      ["nthPath", "html > body > button:nth-of-type(1)"],
+      ["parentChain", [{ tag: "app-shell" }]],
+      ["shadowPath", ["app-shell", "settings-panel"]],
+    ];
+
+    for (const [alias, aliasValue] of aliases) {
+      const locator = sampleLocatorWithStableEvidence();
+      const locatorWithAlias = {
+        ...locator,
+        evidence: { ...locator.evidence, [alias]: aliasValue },
+      };
+      const annotationWithAlias = {
+        ...sampleAnnotation(),
+        target: {
+          ...sampleAnnotation().target,
+          locator: locatorWithAlias,
+        },
+      };
+
+      assert.equal(is_locator(locatorWithAlias), false, alias);
+      assert.equal(is_annotation(annotationWithAlias), false, alias);
+    }
+  });
+
   it("validators reject missing schema_version and known camelCase fields", () => {
     const annotation = sampleAnnotation();
     const envelope: StorageEnvelope = {
@@ -269,6 +331,19 @@ function sampleAgentMark(locator: Locator): AgentMark {
       task_status: "open",
       created_at: "2026-05-31T00:00:00.000Z",
       updated_at: "2026-05-31T00:00:00.000Z",
+    },
+  };
+}
+
+function sampleLocatorWithStableEvidence(): Locator {
+  const locator = sampleLocator();
+  return {
+    ...locator,
+    evidence: {
+      ...locator.evidence,
+      stable_id: "save-button",
+      stable_attrs: { "data-testid": "save-button" },
+      accessible_name: "Save",
     },
   };
 }
