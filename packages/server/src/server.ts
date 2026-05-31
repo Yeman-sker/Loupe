@@ -1,7 +1,7 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
@@ -159,7 +159,7 @@ async function handleRequest(
   }
 
   if (url.pathname === "/v1/marks" || url.pathname.startsWith("/v1/marks/")) {
-    writeJson(response, 200, { marks: [] });
+    handleMarks(request, response, url);
     return;
   }
 
@@ -248,6 +248,32 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse): Pr
   }
 
   writeJson(response, 200, jsonRpcError(id, -32601, "Method not found"));
+}
+
+function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL): void {
+  if (url.pathname !== "/v1/marks") {
+    writeJson(response, 501, {
+      error: { code: error_codes.invalid_request, message: "Mark item operations are not implemented in Phase 0." },
+    });
+    return;
+  }
+
+  if (request.method !== "GET") {
+    writeJson(response, 501, {
+      error: { code: error_codes.invalid_request, message: "Mark mutations are not implemented in Phase 0." },
+    });
+    return;
+  }
+
+  const result = listMarks(Object.fromEntries(url.searchParams));
+  if (result === undefined) {
+    writeJson(response, 400, {
+      error: { code: error_codes.scope_required, message: "Project scope is required." },
+    });
+    return;
+  }
+
+  writeJson(response, 200, result);
 }
 
 function listMarks(args: Record<string, unknown>): ListMarksResponse | undefined {

@@ -2,7 +2,7 @@
 import { runMcpProxy } from "./mcp-proxy.js";
 
 function printUsage(): void {
-  process.stderr.write("Usage: mcp-proxy [--url http://127.0.0.1:7373/mcp]\n");
+  process.stderr.write("Usage: mcp-proxy [--url http://127.0.0.1:7373/mcp] [--token-path ~/.loupe/token]\n");
 }
 
 try {

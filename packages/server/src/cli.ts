@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer, ensureToken, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
-import { LOUPE_DAEMON_NAME, type HealthPayload } from "@loupe/shared";
+import { LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload } from "@loupe/shared";
 
 export type CliCommand = "serve" | "ensure";
 
@@ -41,17 +41,19 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
   }
 }
 
-export async function serve(options: { port: number; home?: string }): Promise<LoupeHttpServer> {
+export async function serve(options: { port?: number; home?: string }): Promise<LoupeHttpServer> {
+  const port = options.port ?? LOUPE_DEFAULT_PORT;
   const home = homeOption(options.home);
   const token = await ensureToken(home);
-  const server = createServer({ port: options.port, ...home, token });
-  await listen(server, options.port);
-  await writeServerStatus({ ...home, port: options.port, tokenPath: tokenPathForHome(server.loupe.home) });
+  const server = createServer({ port, ...home, token });
+  await listen(server, port);
+  await writeServerStatus({ ...home, port, tokenPath: tokenPathForHome(server.loupe.home) });
   return server;
 }
 
-export async function ensure(options: { port: number; home?: string }): Promise<LoupeHttpServer | undefined> {
-  const health = await probeHealth(options.port);
+export async function ensure(options: { port?: number; home?: string }): Promise<LoupeHttpServer | undefined> {
+  const port = options.port ?? LOUPE_DEFAULT_PORT;
+  const health = await probeHealth(port);
   if (health.status === "loupe") {
     const home = homeOption(options.home);
     await ensureToken(home);
@@ -59,9 +61,9 @@ export async function ensure(options: { port: number; home?: string }): Promise<
     return undefined;
   }
   if (health.status === "other") {
-    throw new Error(`Port ${options.port} is occupied by a non-Loupe service.`);
+    throw new Error(`Port ${port} is occupied by a non-Loupe service.`);
   }
-  return serve(options);
+  return serve({ ...options, port });
 }
 
 export function parseCli(argv: string[]): CliOptions {
@@ -91,8 +93,7 @@ export function parseCli(argv: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg ?? ""}`);
   }
 
-  if (port === undefined) throw new Error("--port is required.");
-  return { command, port, ...(home === undefined ? {} : { home }) };
+  return { command, port: port ?? LOUPE_DEFAULT_PORT, ...(home === undefined ? {} : { home }) };
 }
 
 export type HealthProbe =
@@ -165,8 +166,8 @@ function isNodeErrorCode(error: unknown, code: string): boolean {
 }
 
 function writeUsage(stream: Pick<NodeJS.WriteStream, "write">): void {
-  writeLine(stream, "Usage: loupe-server serve --port <n> [--home <path>]");
-  writeLine(stream, "       loupe-server ensure --port <n> [--home <path>]");
+  writeLine(stream, "Usage: loupe-server serve [--port <n>] [--home <path>]");
+  writeLine(stream, "       loupe-server ensure [--port <n>] [--home <path>]");
 }
 
 function writeLine(stream: Pick<NodeJS.WriteStream, "write">, line: string): void {

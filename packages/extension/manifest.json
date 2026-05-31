@@ -4,20 +4,15 @@
   "version": "0.0.0",
   "description": "Loupe Phase 0 placeholder extension.",
   "permissions": ["storage"],
-  "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
-    "http://*/*",
-    "https://*/*"
-  ],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {
-    "service_worker": "dist/background.js",
+    "service_worker": "src/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["dist/content.js"],
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["src/content.js"],
       "run_at": "document_idle"
     }
   ]

@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "typescript-language-server": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"],
+      "fileTypes": [".ts", ".tsx", ".js", ".jsx"],
+      "rootMarkers": ["pnpm-workspace.yaml", "package.json", "tsconfig.json"],
+      "warmupTimeoutMs": 10000
+    }
+  },
+  "idleTimeoutMs": 300000
+}

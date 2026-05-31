@@ -5,6 +5,7 @@
   "type": "module",
   "bin": {
     "loupe-claude-plugin": "./dist/index.js",
+    "claude-plugin": "./dist/index.js",
     "mcp-proxy": "./dist/index.js"
   },
   "files": [

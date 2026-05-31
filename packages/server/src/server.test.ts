@@ -1,11 +1,13 @@
 import { after, before, describe, it } from "node:test";
+import { createServer as createNodeServer, type Server as NodeServer } from "node:http";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { error_codes, LOUPE_DAEMON_NAME, LOUPE_TOKEN_MIN_BYTES } from "@loupe/shared";
-import { createServer, ensureToken, serverStatusPathForHome, tokenPathForHome, writeServerStatus } from "./server.js";
+import { error_codes, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_TOKEN_MIN_BYTES } from "@loupe/shared";
+import { ensure, parseCli, serve } from "./cli.js";
+import { createServer, ensureToken, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
 const originCases: ReadonlyArray<{ name: string; origin?: string }> = [
   { name: "absent Origin" },
@@ -83,6 +85,16 @@ describe("Loupe Phase 0 HTTP contract", () => {
         error: { code: error_codes.unauthorized, message: "Authorization bearer token is required." },
       });
     });
+
+    it(`rejects no-token /v1/marks/some-id for ${originCase.name}`, async () => {
+      const headers = new Headers();
+      if (originCase.origin !== undefined) headers.set("origin", originCase.origin);
+      const response = await fetch(`${baseUrl}/v1/marks/some-id`, { headers });
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), {
+        error: { code: error_codes.unauthorized, message: "Authorization bearer token is required." },
+      });
+    });
   }
 
   it("returns SCOPE_REQUIRED for authorized unscoped list_marks", async () => {
@@ -110,7 +122,62 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.id, "list-route");
     assert.deepEqual(body.result, { project: { project_id: args.workspace_root_hash, ...args }, marks: [] });
   });
-});
+
+  it("returns SCOPE_REQUIRED for authorized unscoped REST list marks", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: { code: error_codes.scope_required, message: "Project scope is required." },
+    });
+  });
+
+  it("returns empty marks for authorized project_id scoped REST list marks", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks?project_id=project-123`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { project: { project_id: "project-123" }, marks: [] });
+  });
+
+  it("returns empty marks for authorized route scoped REST list marks", async () => {
+    const query = new URLSearchParams({
+      workspace_root_hash: "root-hash-123",
+      url: "https://example.test/dashboard",
+      route_key: "/dashboard",
+    });
+    const response = await fetch(`${baseUrl}/v1/marks?${query}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      project: {
+        project_id: "root-hash-123",
+        workspace_root_hash: "root-hash-123",
+        url: "https://example.test/dashboard",
+        route_key: "/dashboard",
+      },
+      marks: [],
+    });
+  });
+
+  it("returns not implemented for authorized REST mark item reads", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks/some-id`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 501);
+    assert.deepEqual(await response.json(), {
+      error: { code: error_codes.invalid_request, message: "Mark item operations are not implemented in Phase 0." },
+    });
+  });
+
+  it("returns not implemented for authorized REST mark mutations", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ project_id: "project-123" }),
+    });
+    assert.equal(response.status, 501);
+    assert.deepEqual(await response.json(), {
+      error: { code: error_codes.invalid_request, message: "Mark mutations are not implemented in Phase 0." },
+    });
+  });
+ });
 
 describe("Loupe Phase 0 token and server status files", () => {
   it("creates a non-empty random-shaped token and server status in a supplied home", async () => {
@@ -136,6 +203,43 @@ describe("Loupe Phase 0 token and server status files", () => {
   });
 });
 
+describe("Loupe Phase 0 CLI", () => {
+  it("defaults serve and ensure to the Loupe default port", () => {
+    assert.deepEqual(parseCli(["serve"]), { command: "serve", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["ensure"]), { command: "ensure", port: LOUPE_DEFAULT_PORT });
+  });
+
+  it("defaults direct serve calls to the Loupe default port", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    let server: LoupeHttpServer | undefined;
+    try {
+      server = await serve({ home });
+      assert.equal(server.loupe.port, LOUPE_DEFAULT_PORT);
+    } finally {
+      if (server !== undefined) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly when ensure probes a non-Loupe service on the requested port", async () => {
+    const dummy = createNodeServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, name: "not-loupe" }));
+    });
+
+    await listenEphemeral(dummy);
+    try {
+      const address = dummy.address() as AddressInfo;
+      await assert.rejects(
+        ensure({ port: address.port }),
+        new Error(`Port ${address.port} is occupied by a non-Loupe service.`),
+      );
+    } finally {
+      await closeServer(dummy);
+    }
+  });
+});
+
 async function callListMarks(
   baseUrl: string,
   token: string,
@@ -157,4 +261,20 @@ async function callListMarks(
   });
   assert.equal(response.status, 200);
   return (await response.json()) as JsonRpcResponse;
+}
+
+async function listenEphemeral(server: NodeServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+async function closeServer(server: NodeServer | LoupeHttpServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
