@@ -8,8 +8,10 @@ import {
   fetch_and_reconcile_daemon_marks,
   probe_daemon_health,
   project_scope_from_url,
+  reconcile_on_service_worker_wake,
   reconcile_daemon_marks,
   resolve_annotation,
+  retry_unsynced_annotations,
   session_marks_key,
   sync_annotation_to_daemon,
   validate_comment,
@@ -212,6 +214,153 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.match(stored?.sync.last_error ?? "", /503/);
   });
 
+  it("preserves local mark and records failure when daemon is offline", async () => {
+    const mark = sample_annotation({ id: "mark-offline" });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [mark] });
+    const fetch = fetch_throwing(new TypeError("fetch failed"));
+
+    const result = await sync_annotation_to_daemon({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), mark);
+
+    assert.equal(result.ok, false);
+    assert.equal(fetch.calls.length, 1);
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, mark.id);
+    assert.equal(stored?.intent.comment, mark.intent.comment);
+    assert.equal(stored?.sync.status, "failed");
+    assert.equal(stored?.sync.retry_count, 1);
+    assert.match(stored?.sync.last_error ?? "", /fetch failed/);
+  });
+
+  it("preserves local mark and records failure when token is rejected", async () => {
+    const mark = sample_annotation({ id: "mark-token-fail" });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [mark] });
+    const fetch = fetch_sequence([{ ok: false, status: 401, body: { error: { message: "invalid token" } } }]);
+
+    const result = await sync_annotation_to_daemon({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), mark);
+
+    assert.equal(result.ok, false);
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, mark.id);
+    assert.equal(stored?.intent.comment, mark.intent.comment);
+    assert.equal(stored?.sync.status, "failed");
+    assert.equal(stored?.sync.retry_count, 1);
+    assert.match(stored?.sync.last_error ?? "", /401/);
+  });
+
+  it("retries failed and local-only marks and marks them synced on success", async () => {
+    const failed = with_test_sync(sample_annotation({ id: "mark-retry-ok" }), { status: "failed", retry_count: 2, last_error: "offline" });
+    const local_only = sample_annotation({ id: "mark-local-retry" });
+    const synced = with_test_sync(sample_annotation({ id: "mark-already-synced" }), { status: "synced", retry_count: 0 });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [failed, local_only, synced] });
+    const fetch = fetch_sequence([
+      { ok: true, body: { ok: true } },
+      { ok: true, body: { ok: true } },
+    ]);
+
+    const result = await retry_unsynced_annotations({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), { project_id: PROJECT_ID, session_id: SESSION_ID });
+
+    assert.equal(result.attempted, 2);
+    assert.equal(result.results.every((item) => item.ok), true);
+    assert.equal(fetch.calls.length, 2);
+    const marks = stored_marks(store);
+    assert.equal(marks.find((mark) => mark.id === failed.id)?.sync.status, "synced");
+    assert.equal(marks.find((mark) => mark.id === failed.id)?.sync.retry_count, 2);
+    assert.equal(marks.find((mark) => mark.id === failed.id)?.sync.last_synced_at, RESOLVED_AT);
+    assert.equal(marks.find((mark) => mark.id === local_only.id)?.sync.status, "synced");
+    assert.equal(marks.find((mark) => mark.id === local_only.id)?.sync.retry_count, 0);
+    assert.equal(marks.find((mark) => mark.id === synced.id)?.sync.status, "synced");
+  });
+
+  it("retry failure preserves local mark and increments retry count", async () => {
+    const failed = with_test_sync(sample_annotation({ id: "mark-retry-fail", comment: "Keep my local comment" }), {
+      status: "failed",
+      retry_count: 2,
+      last_error: "offline",
+    });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [failed] });
+    const fetch = fetch_sequence([{ ok: false, status: 503, body: { error: { message: "still down" } } }]);
+
+    const result = await retry_unsynced_annotations({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), { project_id: PROJECT_ID, session_id: SESSION_ID });
+
+    assert.equal(result.attempted, 1);
+    assert.equal(result.results[0]?.ok, false);
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, failed.id);
+    assert.equal(stored?.intent.comment, "Keep my local comment");
+    assert.equal(stored?.sync.status, "failed");
+    assert.equal(stored?.sync.retry_count, 3);
+    assert.match(stored?.sync.last_error ?? "", /503/);
+  });
+
+  it("service-worker wake retries unsynced marks before daemon reconcile", async () => {
+    const local = with_test_sync(sample_annotation({ id: "mark-wake", comment: "Local unsynced comment" }), {
+      status: "failed",
+      retry_count: 1,
+      last_error: "offline",
+    });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [local] });
+    const fetch = fetch_sequence([
+      { ok: true, body: { ok: true } },
+      { ok: true, body: { project: { project_id: PROJECT_ID }, marks: [sample_agent_mark(local, { updated_at: RESOLVED_AT })] } },
+    ]);
+
+    await reconcile_on_service_worker_wake({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), local.project);
+
+    assert.equal(fetch.calls.length, 2);
+    assert.equal(fetch.calls[0]?.init?.method, "POST");
+    assert.equal(fetch.calls[1]?.init?.method, "GET");
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.id, local.id);
+    assert.equal(stored?.intent.comment, "Local unsynced comment");
+    assert.equal(stored?.sync.status, "synced");
+  });
+
+  it("service-worker wake does not let daemon overwrite newer failed local mark", async () => {
+    const local = with_test_sync(
+      { ...sample_annotation({ id: "mark-wake-preserve", comment: "New local comment" }), lifecycle: { task_status: "open", created_at: NOW, updated_at: RESOLVED_AT } },
+      { status: "failed", retry_count: 1, last_error: "offline" },
+    );
+    const older_daemon = sample_agent_mark(
+      { ...local, intent: { ...local.intent, comment: "Older daemon comment" }, lifecycle: { ...local.lifecycle, updated_at: NOW } },
+      { updated_at: NOW },
+    );
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [local] });
+    const fetch = fetch_sequence([
+      { ok: false, status: 503, body: { error: { message: "still down" } } },
+      { ok: true, body: { project: { project_id: PROJECT_ID }, marks: [older_daemon] } },
+    ]);
+
+    await reconcile_on_service_worker_wake({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), local.project);
+
+    assert.equal(fetch.calls[0]?.init?.method, "POST");
+    assert.equal(fetch.calls[1]?.init?.method, "GET");
+    const stored = stored_marks(store)[0];
+    assert.equal(stored?.intent.comment, "New local comment");
+    assert.equal(stored?.sync.status, "failed");
+    assert.equal(stored?.sync.retry_count, 2);
+    assert.match(stored?.sync.last_error ?? "", /503/);
+  });
+
+  it("copy markdown includes failed open local marks", () => {
+    const failed = with_test_sync(sample_annotation({ id: "mark-copy-failed", comment: "Copy me even when token failed" }), {
+      status: "failed",
+      retry_count: 1,
+      last_error: "POST /v1/marks failed with 401",
+    });
+
+    const markdown = copy_markdown([failed], { project_id: PROJECT_ID, session_id: SESSION_ID, route_key: ROUTE_KEY });
+
+    assert.match(markdown, /id: mark-copy-failed/);
+    assert.match(markdown, /comment: Copy me even when token failed/);
+    assert.match(markdown, /sync: failed/);
+  });
+
   it("fetches scoped daemon marks and reconciles a resolved mutation", async () => {
     const mark = { ...sample_annotation({ id: "mark-resolved-daemon" }), sync: { status: "synced" as const, retry_count: 0 } };
     const store = new MemoryStore({ [session_marks_key(PROJECT_ID, SESSION_ID)]: [mark] });
@@ -232,6 +381,89 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.equal(stored?.sync.status, "synced");
   });
 
+  it("stores daemon-only marks fetched into a fresh local store", async () => {
+    const daemon_mark = {
+      ...sample_agent_mark(sample_annotation({ id: "mark-daemon-only", comment: "Daemon note", selector_preview: "main button.save" })),
+      project: { ...sample_agent_mark(sample_annotation({ id: "mark-daemon-only" })).project, branch: "main" },
+      target: {
+        ...sample_agent_mark(sample_annotation({ id: "mark-daemon-only" })).target,
+        frame_path: [{ selector: "iframe.editor", name: "editor" }],
+        shadow_path: ["loupe-shell", "button.save"],
+        path: "html > body > main > button:nth-of-type(1)",
+      },
+    } satisfies AgentMark;
+    const store = new MemoryStore({});
+    const fetch = fetch_sequence([{ ok: true, body: { project: { project_id: PROJECT_ID }, marks: [daemon_mark] } }]);
+
+    await fetch_and_reconcile_daemon_marks({ fetch, store }, daemon_options(), sample_project());
+
+    const stored = stored_marks(store);
+    assert.equal(stored.length, 1);
+    const reconstructed = stored[0];
+    assert.ok(reconstructed);
+    assert.doesNotThrow(() => assert_annotation(reconstructed));
+    assert.equal(reconstructed.id, daemon_mark.id);
+    assert.equal(reconstructed.schema_version, LOUPE_SCHEMA_VERSION);
+    assert.deepEqual(reconstructed.project, {
+      project_id: PROJECT_ID,
+      workspace_root_hash: "workspace-root-hash",
+      branch: "main",
+      origin: "https://app.example.test",
+      url: "https://app.example.test/dashboard?tab=home",
+      route_key: ROUTE_KEY,
+      session_id: SESSION_ID,
+    });
+    assert.deepEqual(reconstructed.target.locator.frame_path, daemon_mark.target.frame_path);
+    assert.deepEqual(reconstructed.target.locator.primary, { selector: daemon_mark.target.selector, strategy: "shadow_path" });
+    assert.deepEqual(reconstructed.target.locator.alternates, [{ selector: daemon_mark.target.path, strategy: "nth_path" }]);
+    assert.deepEqual(reconstructed.target.locator.evidence.shadow_path, daemon_mark.target.shadow_path);
+    assert.equal(reconstructed.target.locator.evidence.nth_path, daemon_mark.target.path);
+    assert.equal(reconstructed.target.resolution.locator_status, daemon_mark.target.locator_status);
+    assert.equal(reconstructed.target.resolution.confidence, daemon_mark.target.confidence);
+    assert.deepEqual(reconstructed.target.resolution.matched_by, daemon_mark.target.matched_by);
+    assert.equal(reconstructed.intent.comment, "Daemon note");
+    assert.deepEqual(reconstructed.context.element, {
+      tag: "button",
+      classes: ["btn", "primary"],
+      text: "Save",
+      selector_preview: "button#save-button",
+    });
+    assert.deepEqual(reconstructed.sync, { status: "synced", retry_count: 0 });
+    assert.deepEqual(reconstructed.media, daemon_mark.media);
+    assert.deepEqual(reconstructed.lifecycle, daemon_mark.lifecycle);
+  });
+
+  it("appends daemon-only wake marks while preserving newer failed local marks", async () => {
+    const local = with_test_sync(
+      { ...sample_annotation({ id: "mark-local-newer", comment: "Newer failed local" }), lifecycle: { task_status: "open", created_at: NOW, updated_at: RESOLVED_AT } },
+      { status: "failed", retry_count: 1, last_error: "offline" },
+    );
+    const older_daemon = sample_agent_mark(
+      { ...local, intent: { ...local.intent, comment: "Older daemon" }, lifecycle: { ...local.lifecycle, updated_at: NOW } },
+      { updated_at: NOW },
+    );
+    const daemon_only = sample_agent_mark(sample_annotation({ id: "mark-wake-daemon-only", comment: "Wake daemon only" }));
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const store = new MemoryStore({ [marks_key]: [local] });
+    const fetch = fetch_sequence([
+      { ok: false, status: 503, body: { error: { message: "still down" } } },
+      { ok: true, body: { project: { project_id: PROJECT_ID }, marks: [older_daemon, daemon_only] } },
+    ]);
+
+    await reconcile_on_service_worker_wake({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), local.project);
+
+    const marks = stored_marks(store);
+    assert.deepEqual(marks.map((mark) => mark.id), [local.id, daemon_only.id]);
+    const preserved = marks.find((mark) => mark.id === local.id);
+    assert.equal(preserved?.intent.comment, "Newer failed local");
+    assert.equal(preserved?.sync.status, "failed");
+    assert.equal(preserved?.sync.retry_count, 2);
+    assert.match(preserved?.sync.last_error ?? "", /503/);
+    const appended = marks.find((mark) => mark.id === daemon_only.id);
+    assert.equal(appended?.intent.comment, "Wake daemon only");
+    assert.equal(appended?.sync.status, "synced");
+    assert.doesNotThrow(() => assert_annotation(appended));
+  });
   it("reconciles daemon delete by removing active mark and writing a tombstone", async () => {
     const deleted = { ...sample_annotation({ id: "mark-deleted" }), sync: { status: "synced" as const, retry_count: 0 } };
     const kept = { ...sample_annotation({ id: "mark-kept" }), sync: { status: "synced" as const, retry_count: 0 } };
@@ -369,6 +601,10 @@ function sample_agent_mark(mark: Annotation, overrides: { task_status?: "open" |
   };
 }
 
+function with_test_sync(mark: Annotation, sync: Annotation["sync"]): Annotation {
+  return { ...mark, sync };
+}
+
 function daemon_options() {
   return { base_url: "http://127.0.0.1:7373", token: "token-123" };
 }
@@ -393,6 +629,16 @@ function fetch_sequence(fixtures: FetchFixture[]): DaemonFetch & { calls: FetchC
       json: async () => fixture.body,
     } as Response;
   }) as DaemonFetch & { calls: FetchCall[] };
+  fetch_impl.calls = calls;
+  return fetch_impl;
+}
+
+function fetch_throwing(error: Error): DaemonFetch & { calls: FetchCall[] } {
+  const calls: FetchCall[] = [];
+  const fetch_impl = (async (input: string, init?: RequestInit) => {
+    calls.push(init === undefined ? { input } : { input, init });
+    throw error;
+  }) as unknown as DaemonFetch & { calls: FetchCall[] };
   fetch_impl.calls = calls;
   return fetch_impl;
 }

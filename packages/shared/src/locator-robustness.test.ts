@@ -5,6 +5,7 @@ import {
   is_locator,
   is_resolve_result,
   resolve,
+  type BoundaryKind,
   type Locator,
   type LocatorStatus,
   type ResolveResult,
@@ -140,6 +141,161 @@ describe("Loupe Phase 1 offline locator robustness", () => {
   });
 });
 
+describe("Loupe Phase 4 support matrix locator runtime", () => {
+  it("same-origin iframe resolves internal target through frame_path", () => {
+    const context = build_iframe_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+
+    assert.equal(is_locator(locator), true, "same-origin iframe: invalid locator");
+    assert.equal(locator.evidence.tag, "button", "same-origin iframe: target evidence must describe internal element");
+    assert.ok(locator.frame_path?.length, "same-origin iframe: expected frame_path evidence");
+    assert.equal(locator.frame_path[0]?.selector, '[data-testid=\"preview-frame\"]', "same-origin iframe: expected shell selector in frame_path");
+    assert.equal(locator.evidence.boundary, undefined, "same-origin iframe: same-origin internals must not be boundary shells");
+    assert.deepEqual(context.root.querySelectorAll(locator.primary.selector), [], "same-origin iframe: top query must not pierce contentDocument");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix same-origin iframe");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["stable_attrs", "accessible_name"], "same-origin iframe: expected internal target evidence match");
+  });
+
+  it("cross-origin iframe boundary resolves the iframe shell", () => {
+    const context = build_cross_origin_iframe_boundary_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+    locator.evidence.boundary = {
+      kind: "cross_origin_iframe",
+      target_scope: "boundary_shell",
+      internal_target_supported: false,
+      shell_selector: locator.primary.selector,
+      reason: "Cross-origin iframe contentDocument is inaccessible; mark the iframe shell.",
+    };
+
+    assert.equal(is_locator(locator), true, "cross-origin iframe: invalid boundary locator");
+    assert.equal(locator.evidence.tag, "iframe");
+    assert.equal(locator.frame_path, undefined, "cross-origin iframe: shell locator must not claim internal frame_path");
+    assert_boundary(locator, "cross_origin_iframe", "boundary_shell");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix cross-origin iframe");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["stable_attrs", "primary_selector"], "cross-origin iframe: expected shell selector match");
+  });
+
+  it("SVG text element captures geometry and resolves the internal element", () => {
+    const context = build_svg_text_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+
+    assert.equal(is_locator(locator), true, "SVG: invalid locator");
+    assert.equal(locator.evidence.tag, "text");
+    assert.equal(locator.evidence.text?.normalized, "Q4 revenue");
+    assert.ok(locator.evidence.geometry, "SVG: expected geometry evidence");
+    assert.equal(locator.evidence.geometry?.x, 96);
+    assert.equal(locator.evidence.geometry?.width, 84);
+    assert.equal(locator.evidence.boundary, undefined, "SVG text is supported as an internal target");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix SVG");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["geometry", "text"], "SVG: expected geometry or text match");
+  });
+
+  it("canvas internal target is represented by the canvas boundary shell", () => {
+    const context = build_canvas_boundary_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+    locator.evidence.boundary = {
+      kind: "canvas_internal_target",
+      target_scope: "boundary_shell",
+      internal_target_supported: false,
+      shell_selector: locator.primary.selector,
+      reason: "Canvas pixels are not DOM elements; mark the canvas shell.",
+    };
+
+    assert.equal(is_locator(locator), true, "canvas: invalid boundary locator");
+    assert.equal(locator.evidence.tag, "canvas");
+    assert.ok(locator.evidence.geometry, "canvas: expected shell geometry evidence");
+    assert_boundary(locator, "canvas_internal_target", "boundary_shell");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix canvas");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["stable_attrs", "primary_selector"], "canvas: expected canvas shell match");
+  });
+
+  it("open Shadow DOM resolves internal target via shadow_path", () => {
+    const context = build_shadow_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+
+    assert.equal(is_locator(locator), true, "open Shadow DOM: invalid locator");
+    assert.ok(locator.evidence.shadow_path?.length, "open Shadow DOM: expected shadow_path evidence");
+    assert.equal(locator.evidence.boundary, undefined, "open Shadow DOM: internal target should not be downgraded to boundary shell");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix open Shadow DOM");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["shadow_path", "stable_attrs"], "open Shadow DOM: expected shadow_path/internal evidence match");
+  });
+
+  it("closed Shadow DOM boundary resolves the host shell", () => {
+    const context = build_closed_shadow_boundary_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+    locator.evidence.boundary = {
+      kind: "closed_shadow_root",
+      target_scope: "boundary_shell",
+      internal_target_supported: false,
+      shell_selector: locator.primary.selector,
+      reason: "Closed shadow root internals are inaccessible; mark the host shell.",
+    };
+
+    assert.equal(is_locator(locator), true, "closed Shadow DOM: invalid boundary locator");
+    assert.equal(locator.evidence.tag, "secure-card");
+    assert.equal(locator.evidence.shadow_path, undefined, "closed Shadow DOM: host shell must not expose internal shadow_path");
+    assert_boundary(locator, "closed_shadow_root", "boundary_shell");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix closed Shadow DOM");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["stable_attrs", "primary_selector"], "closed Shadow DOM: expected host shell match");
+  });
+
+  it("portal teleport uses actual DOM container for parent_chain and resolve", () => {
+    const context = build_portal_teleport_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+
+    assert.equal(is_locator(locator), true, "portal teleport: invalid locator");
+    assert.equal(locator.evidence.parent_chain[0]?.stable_attr, "data-testid=portal-root", "portal teleport: parent_chain must reflect actual host container");
+    assert.notEqual(locator.evidence.parent_chain[0]?.stable_attr, "data-testid=logical-owner", "portal teleport: logical owner must not replace actual DOM parent");
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix portal teleport");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["parent_chain", "stable_attrs"], "portal teleport: expected actual DOM evidence match");
+  });
+
+  it("nested scroll preserves viewport rect geometry for capture and resolve", () => {
+    const context = build_nested_scroll_fixture();
+    const locator = capture_locator(context.target as unknown as Element, { max_parent_depth: 6 });
+
+    assert.equal(is_locator(locator), true, "nested scroll: invalid locator");
+    assert.equal(locator.evidence.geometry?.x, 42);
+    assert.equal(locator.evidence.geometry?.y, 320);
+    assert.equal(locator.evidence.geometry?.viewport_width, 1280);
+    assert.equal(locator.evidence.geometry?.viewport_height, 720);
+
+    const result = resolve(locator, context.root as unknown as Document) as ResolveResultWithElement;
+    assert_resolve_result_contract(result, "support matrix nested scroll");
+    assert.equal(result.locator_status, "resolved");
+    assert.equal(result.element, context.target as unknown as Element);
+    assert_matched_by_prefix(result, ["geometry", "stable_attrs"], "nested scroll: expected geometry or stable evidence match");
+  });
+});
+
 function fixtures(): Fixture[] {
   return [
     {
@@ -206,7 +362,7 @@ function fixtures(): Fixture[] {
         const hidden_from_top_level = root.querySelectorAll('[data-testid="frame-action"]');
         assert.deepEqual(hidden_from_top_level, [], "same-origin iframe: top document querySelectorAll must not pierce iframe contentDocument");
         assert.ok(locator.frame_path?.length, "same-origin iframe: expected frame_path evidence");
-        assert.equal(locator.frame_path[0]?.selector, '[data-testid="preview-frame"]', "same-origin iframe: expected stable iframe selector in frame_path");
+        assert.equal(locator.frame_path[0]?.selector, '[data-testid=\"preview-frame\"]', "same-origin iframe: expected stable iframe selector in frame_path");
         assert.equal(root.querySelector(locator.frame_path[0]?.selector ?? ""), iframe, "same-origin iframe: frame_path selector must resolve the iframe shell from the top document");
       },
     },
@@ -431,6 +587,17 @@ function is_explainable_match_reason(reason: string): boolean {
   return Object.keys(EXPLAINABLE_MATCH_REASONS).some((prefix) => reason === prefix || reason.startsWith(`${prefix}:`) || reason.startsWith(`${prefix}_`));
 }
 
+function assert_matched_by_prefix(result: ResolveResultWithElement, prefixes: readonly string[], message: string): void {
+  assert.ok(result.matched_by.some((reason) => prefixes.some((prefix) => reason === prefix || reason.startsWith(`${prefix}:`) || reason.startsWith(`${prefix}_`))), message);
+}
+
+function assert_boundary(locator: Locator, kind: BoundaryKind, target_scope: "boundary_shell"): void {
+  assert.equal(locator.evidence.boundary?.kind, kind);
+  assert.equal(locator.evidence.boundary?.target_scope, target_scope);
+  assert.equal(locator.evidence.boundary?.internal_target_supported, false);
+  assert.ok(locator.evidence.boundary?.shell_selector, `${kind}: expected shell_selector`);
+}
+
 function build_button_fixture(input: { className: string; text: string }): FixtureContext {
   const root = new FakeDocument();
   const wrapper = root.createElement("main");
@@ -519,6 +686,36 @@ function build_iframe_fixture(): FixtureContext {
   return { root, target, notes: { iframe, frameDocument, frameTarget: target } };
 }
 
+function build_cross_origin_iframe_boundary_fixture(): FixtureContext {
+  const root = new FakeDocument();
+  const target = root.createElement("iframe");
+  target.setAttribute("data-testid", "cross-origin-frame");
+  target.setAttribute("title", "Billing provider");
+  target.setRect({ x: 12, y: 80, width: 640, height: 480 });
+  root.body.append(target);
+  return { root, target };
+}
+
+function build_canvas_boundary_fixture(): FixtureContext {
+  const root = new FakeDocument();
+  const target = root.createElement("canvas");
+  target.setAttribute("data-testid", "sales-chart");
+  target.setAttribute("aria-label", "Sales chart");
+  target.setRect({ x: 32, y: 120, width: 480, height: 240 });
+  root.body.append(target);
+  return { root, target };
+}
+
+function build_closed_shadow_boundary_fixture(): FixtureContext {
+  const root = new FakeDocument();
+  const target = root.createElement("secure-card");
+  target.setAttribute("data-testid", "closed-shadow-host");
+  target.setAttribute("aria-label", "Secure card");
+  target.setRect({ x: 18, y: 72, width: 320, height: 180 });
+  root.body.append(target);
+  return { root, target };
+}
+
 function build_svg_fixture(): FixtureContext {
   const root = new FakeDocument();
   const svg = root.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -533,6 +730,20 @@ function build_svg_fixture(): FixtureContext {
   svg.append(group);
   root.body.append(svg);
   return { root, target, notes: { svg, group } };
+}
+
+function build_svg_text_fixture(): FixtureContext {
+  const root = new FakeDocument();
+  const svg = root.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("data-testid", "chart");
+  const target = root.createElementNS("http://www.w3.org/2000/svg", "text");
+  target.setAttribute("data-testid", "q4-revenue-label");
+  target.setAttribute("class", "axis-label");
+  target.setRect({ x: 96, y: 48, width: 84, height: 18 });
+  target.replaceText("Q4 revenue");
+  svg.append(target);
+  root.body.append(svg);
+  return { root, target, notes: { svg } };
 }
 
 function build_nested_scroll_fixture(): FixtureContext {
@@ -552,6 +763,21 @@ function build_nested_scroll_fixture(): FixtureContext {
   outer.append(scroller);
   root.body.append(outer);
   return { root, target, notes: { outer, scroller } };
+}
+
+function build_portal_teleport_fixture(): FixtureContext {
+  const root = new FakeDocument();
+  const logicalOwner = root.createElement("section");
+  logicalOwner.setAttribute("data-testid", "logical-owner");
+  const portalRoot = root.createElement("div");
+  portalRoot.setAttribute("data-testid", "portal-root");
+  const target = root.createElement("button");
+  target.setAttribute("data-testid", "teleported-action");
+  target.setAttribute("aria-label", "Open command palette");
+  target.replaceText("Open command palette");
+  portalRoot.append(target);
+  root.body.append(logicalOwner, portalRoot);
+  return { root, target, notes: { logicalOwner, portalRoot } };
 }
 
 function build_implicit_aria_label_fixture(): FixtureContext {
@@ -692,6 +918,7 @@ class FakeElement {
   set id(value: string) {
     this.setAttribute("id", value);
   }
+
 
   get className(): string {
     return this.getAttribute("class") ?? "";
@@ -912,6 +1139,14 @@ class FakeDocument {
 
   querySelector(selector: string): FakeElement | null {
     return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  elementFromPoint(x: number, y: number): FakeElement | null {
+    const matches = collect_descendants(this).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+    return matches[matches.length - 1] ?? null;
   }
 }
 

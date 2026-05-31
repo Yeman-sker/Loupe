@@ -1,7 +1,10 @@
 const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
+  SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
 });
+
+const LOUPE_AUTH_SCHEME = "Bearer";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.session.set({
@@ -28,6 +31,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
+    void handleServiceWorkerWake(message).then(sendResponse, (error) => {
+      sendResponse({ ok: false, error: errorMessage(error) });
+    });
+    return true;
+  }
+
   return false;
 });
 
@@ -47,6 +57,185 @@ async function handleRequestOriginAuth(message, sender) {
   if (alreadyAuthorized) return { ok: true, authorized: true, origin, origin_pattern: origins[0] };
   const granted = await chrome.permissions.request({ origins });
   return { ok: true, authorized: granted, origin, origin_pattern: origins[0] };
+}
+
+async function handleServiceWorkerWake(message) {
+  const now = new Date().toISOString();
+  await chrome.storage.session.set(serviceWorkerWakeState(now));
+
+  const scope = wakeScope(message);
+  const daemon = wakeDaemon(message);
+  if (!scope || !daemon) return { ok: true, reconciled: false, retried: 0, stored: 0 };
+
+  const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
+  const stored = await chrome.storage.local.get(marksKey);
+  const localMarks = readAnnotationArray(stored?.[marksKey]);
+  const retryable = localMarks.filter((mark) => isScopeMark(mark, scope) && (mark.sync?.status === "local_only" || mark.sync?.status === "failed"));
+  const retryResults = [];
+  for (const mark of retryable) retryResults.push(await retryLocalMark(marksKey, mark, daemon, now));
+
+  try {
+    const response = await fetch(markListUrl(daemon.base_url, scope), { method: "GET", headers: authorizedHeaders(daemon.token) });
+    if (!response.ok) throw new Error(`GET /v1/marks failed with ${response.status}`);
+    const payload = await response.json();
+    const daemonMarks = Array.isArray(payload?.marks) ? payload.marks : [];
+    const merged = await reconcileDaemonMarks(marksKey, scope, daemonMarks);
+    return { ok: true, reconciled: true, retried: retryResults.length, stored: merged.length };
+  } catch (error) {
+    return { ok: true, reconciled: false, retried: retryResults.length, stored: readAnnotationArray((await chrome.storage.local.get(marksKey))?.[marksKey]).length, error: errorMessage(error) };
+  }
+}
+
+function serviceWorkerWakeState(now) {
+  return {
+    loupe_phase: "phase_4_mv3_regression",
+    daemon_health_url: "http://127.0.0.1:7373/health",
+    last_service_worker_wake_at: now,
+    exposes_token_to_page: false,
+    exposes_page_window_api: false,
+    bridge_nonce_readonly: true,
+  };
+}
+
+function wakeScope(message) {
+  const scope = isObject(message.scope) ? message.scope : message;
+  if (typeof scope.project_id !== "string" || typeof scope.session_id !== "string") return null;
+  return {
+    project_id: scope.project_id,
+    session_id: scope.session_id,
+    workspace_root_hash: typeof scope.workspace_root_hash === "string" ? scope.workspace_root_hash : undefined,
+    branch: typeof scope.branch === "string" ? scope.branch : undefined,
+    origin: typeof scope.origin === "string" ? scope.origin : undefined,
+    url: typeof scope.url === "string" ? scope.url : undefined,
+    route_key: typeof scope.route_key === "string" ? scope.route_key : undefined,
+  };
+}
+
+function wakeDaemon(message) {
+  const daemon = isObject(message.daemon) ? message.daemon : message;
+  if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return null;
+  return { base_url: daemon.base_url, token: daemon.token };
+}
+
+async function retryLocalMark(marksKey, mark, daemon, now) {
+  await replaceStoredMark(marksKey, { ...mark, sync: { status: "syncing", retry_count: mark.sync?.retry_count || 0 } });
+  try {
+    const response = await fetch(joinDaemonUrl(daemon.base_url, "/v1/marks"), {
+      method: "POST",
+      headers: { ...authorizedHeaders(daemon.token), "content-type": "application/json" },
+      body: JSON.stringify(mark),
+    });
+    if (!response.ok) throw new Error(`POST /v1/marks failed with ${response.status}`);
+    const current = (await readStoredMark(marksKey, mark.id)) || mark;
+    if (current.lifecycle?.updated_at !== mark.lifecycle?.updated_at) return { ok: true, mark: current };
+    const synced = { ...current, sync: { status: "synced", retry_count: current.sync?.retry_count || 0, last_synced_at: now } };
+    await replaceStoredMark(marksKey, synced);
+    return { ok: true, mark: synced };
+  } catch (error) {
+    const current = (await readStoredMark(marksKey, mark.id)) || mark;
+    const failed = { ...current, sync: { status: "failed", retry_count: (current.sync?.retry_count || 0) + 1, last_error: errorMessage(error) } };
+    await replaceStoredMark(marksKey, failed);
+    return { ok: false, mark: failed, error: failed.sync.last_error };
+  }
+}
+
+async function reconcileDaemonMarks(marksKey, scope, daemonMarks) {
+  const stored = await chrome.storage.local.get(marksKey);
+  const localMarks = readAnnotationArray(stored?.[marksKey]);
+  const byId = new Map(localMarks.map((mark) => [mark.id, mark]));
+  for (const daemonMark of daemonMarks) {
+    if (!isDaemonMarkForScope(daemonMark, scope)) continue;
+    const local = byId.get(daemonMark.id);
+    if (local && shouldPreserveUnsyncedLocal(local, daemonMark)) continue;
+    byId.set(daemonMark.id, local ? reconcileLocalMark(local, daemonMark) : annotationFromDaemonMark(daemonMark));
+  }
+  const next = Array.from(byId.values());
+  await chrome.storage.local.set({ [marksKey]: next });
+  return next;
+}
+
+function annotationFromDaemonMark(daemonMark) {
+  const now = daemonMark.lifecycle.updated_at;
+  const selector = daemonMark.target.selector;
+  return {
+    schema_version: 1,
+    id: daemonMark.id,
+    project: { ...daemonMark.project },
+    target: { locator: { primary: { selector, strategy: "daemon" }, alternates: [], evidence: { tag: daemonMark.target.tag || "unknown", nth_path: selector, parent_chain: [] } }, resolution: { locator_status: daemonMark.target.locator_status, confidence: daemonMark.target.confidence, matched_by: daemonMark.target.matched_by || ["daemon"], resolved_at: now } },
+    intent: { comment: daemonMark.intent.comment, kind: daemonMark.intent.kind || "other" },
+    context: { element: { tag: daemonMark.target.tag || "unknown", selector_preview: daemonMark.target.selector_preview || selector, ...(daemonMark.target.text === undefined ? {} : { text: daemonMark.target.text }), ...(daemonMark.target.classes === undefined ? {} : { classes: daemonMark.target.classes }) }, viewport: { width: 0, height: 0, dpr: 1 }, position: { x: 0, y: 0, width: 0, height: 0 } },
+    sync: { status: "synced", retry_count: 0 },
+    media: daemonMark.media || { has_screenshot: false },
+    replies: { items: [] },
+    lifecycle: { task_status: daemonMark.lifecycle.task_status, created_at: daemonMark.lifecycle.created_at, updated_at: daemonMark.lifecycle.updated_at },
+  };
+}
+
+function reconcileLocalMark(localMark, daemonMark) {
+  return {
+    ...localMark,
+    intent: { comment: daemonMark.intent.comment, kind: daemonMark.intent.kind || localMark.intent?.kind || "other" },
+    target: { ...localMark.target, resolution: { ...localMark.target?.resolution, locator_status: daemonMark.target.locator_status, confidence: daemonMark.target.confidence, matched_by: daemonMark.target.matched_by || [] } },
+    lifecycle: { ...localMark.lifecycle, task_status: daemonMark.lifecycle.task_status, updated_at: daemonMark.lifecycle.updated_at, ...(daemonMark.lifecycle.task_status === "resolved" && localMark.lifecycle?.task_resolved_at === undefined ? { task_resolved_at: daemonMark.lifecycle.updated_at } : {}) },
+    sync: { status: "synced", retry_count: localMark.sync?.retry_count || 0 },
+  };
+}
+
+function shouldPreserveUnsyncedLocal(localMark, daemonMark) {
+  return (localMark.sync?.status === "local_only" || localMark.sync?.status === "failed") && localMark.lifecycle?.updated_at >= daemonMark.lifecycle?.updated_at;
+}
+
+async function replaceStoredMark(marksKey, mark) {
+  const stored = await chrome.storage.local.get(marksKey);
+  const marks = readAnnotationArray(stored?.[marksKey]);
+  const index = marks.findIndex((item) => item.id === mark.id);
+  const next = index === -1 ? [...marks, mark] : [...marks.slice(0, index), mark, ...marks.slice(index + 1)];
+  await chrome.storage.local.set({ [marksKey]: next });
+}
+
+async function readStoredMark(marksKey, markId) {
+  const stored = await chrome.storage.local.get(marksKey);
+  return readAnnotationArray(stored?.[marksKey]).find((mark) => mark.id === markId);
+}
+
+function isScopeMark(mark, scope) {
+  return mark?.project?.project_id === scope.project_id && mark.project.session_id === scope.session_id;
+}
+
+function isDaemonMarkForScope(mark, scope) {
+  return mark?.project?.project_id === scope.project_id && mark.project.session_id === scope.session_id;
+}
+
+function readAnnotationArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function sessionMarksKey(projectId, sessionId) {
+  return `loupe:v1:project:${projectId}:session:${sessionId}:marks`;
+}
+
+function markListUrl(baseUrl, scope) {
+  const url = new URL(joinDaemonUrl(baseUrl, "/v1/marks"));
+  appendParam(url, "project_id", scope.project_id);
+  appendParam(url, "workspace_root_hash", scope.workspace_root_hash);
+  appendParam(url, "branch", scope.branch);
+  appendParam(url, "origin", scope.origin);
+  appendParam(url, "url", scope.url);
+  appendParam(url, "route_key", scope.route_key);
+  appendParam(url, "session_id", scope.session_id);
+  return url.href;
+}
+
+function appendParam(url, key, value) {
+  if (value !== undefined) url.searchParams.set(key, value);
+}
+
+function authorizedHeaders(token) {
+  return { authorization: `${LOUPE_AUTH_SCHEME} ${token}` };
+}
+
+function joinDaemonUrl(baseUrl, path) {
+  return new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).href;
 }
 
 function originFromMessageOrSender(message, sender) {

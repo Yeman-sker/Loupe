@@ -35,6 +35,8 @@
     "[tabindex]:not([tabindex='-1'])",
   ].join(",");
   const POINTER_SUPPRESS_MS = 700;
+  const RECOVERY_QUIET_MS = 250;
+  const RECOVERY_TIMEOUT_MS = 1500;
   const IMPLICIT_ROLES = Object.freeze({
     a: "link",
     button: "button",
@@ -77,6 +79,11 @@
     panelOpen: false,
     suppressedPointer: null,
     dialogFocusReturn: null,
+    recoveryEpoch: 0,
+    recoveryQuietTimer: 0,
+    recoveryTimeoutTimer: 0,
+    recoveryObservedRouteKey: "",
+    recoveryObserver: null,
   };
 
   const host = document.createElement("div");
@@ -178,12 +185,13 @@
     document.addEventListener("pointerdown", blockHostPointerWhilePicking, true);
     document.addEventListener("pointerup", blockHostPointerWhilePicking, true);
     document.addEventListener("click", blockHostPointerWhilePicking, true);
-    window.addEventListener("resize", renderPins, { passive: true });
+    window.addEventListener("resize", repositionPins, { passive: true });
     window.addEventListener("popstate", handleRouteChange, true);
     window.addEventListener("hashchange", handleRouteChange, true);
     patchHistoryMethod("pushState");
     patchHistoryMethod("replaceState");
-    window.addEventListener("scroll", renderPins, { passive: true, capture: true });
+    window.addEventListener("scroll", repositionPins, { passive: true, capture: true });
+    observeDomForRecovery();
     await loadMarks();
   }
 
@@ -521,7 +529,7 @@
       }
     }
     state.marks = loaded;
-    renderPins();
+    scheduleMarkRecovery("load");
     renderShell();
   }
 
@@ -585,6 +593,15 @@
 
   function renderPins() {
     if (!state.fullAppInitialized) return;
+    renderPinsForResolvedMarks({ commit: true, epoch: state.recoveryEpoch, routeKey: state.project.route_key });
+  }
+
+  function repositionPins() {
+    if (!state.fullAppInitialized) return;
+    renderPinsForResolvedMarks({ commit: false, epoch: state.recoveryEpoch, routeKey: state.project.route_key });
+  }
+
+  function renderPinsForResolvedMarks({ commit, epoch, routeKey }) {
     for (const pin of state.pins.values()) pin.remove();
     state.pins.clear();
     state.marks.forEach((mark, index) => {
@@ -606,13 +623,19 @@
       pin.addEventListener("click", () => openDetail(mark, pin));
       app.append(pin);
       state.pins.set(mark.id, pin);
-      mark.target.resolution = {
-        locator_status: result.locator_status,
-        confidence: result.confidence,
-        matched_by: result.matched_by,
-        resolved_at: new Date().toISOString(),
-      };
+      if (commit) commitMarkResolution(mark, result, epoch, routeKey);
     });
+  }
+
+  function commitMarkResolution(mark, result, epoch, routeKey) {
+    if (epoch !== state.recoveryEpoch || routeKey !== state.project.route_key || markProject(mark).route_key !== routeKey) return false;
+    mark.target.resolution = {
+      locator_status: result.locator_status,
+      confidence: result.confidence,
+      matched_by: result.matched_by,
+      resolved_at: new Date().toISOString(),
+    };
+    return true;
   }
 
   function openDetail(mark, anchor) {
@@ -1178,6 +1201,53 @@
     return { project_id: projectId, workspace_root_hash: `origin_${fnv1a(location.origin).toString(36)}`, origin: location.origin, route_key: routeKey(), session_id: state.sessionId || "pending", url: location.href, title: document.title || undefined };
   }
 
+  function observeDomForRecovery() {
+    if (state.recoveryObserver || typeof MutationObserver !== "function") return;
+    state.recoveryObserver = new MutationObserver((records) => {
+      if (!state.fullAppInitialized || !records.some(isRecoveryMutation)) return;
+      scheduleMarkRecovery("dom");
+    });
+    state.recoveryObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+  }
+
+  function isRecoveryMutation(record) {
+    if (isInsideExtension(record.target)) return false;
+    if (record.type === "childList") {
+      for (const node of record.addedNodes) if (!isInsideExtension(node)) return true;
+      for (const node of record.removedNodes) if (!isInsideExtension(node)) return true;
+      return false;
+    }
+    return record.target instanceof Element;
+  }
+
+  function scheduleMarkRecovery(reason) {
+    if (!state.fullAppInitialized) return;
+    const routeKeySnapshot = state.project.route_key;
+    const epoch = reason === "route" ? state.recoveryEpoch + 1 : state.recoveryEpoch;
+    if (reason === "route") state.recoveryEpoch = epoch;
+    state.recoveryObservedRouteKey = routeKeySnapshot;
+    clearTimeout(state.recoveryQuietTimer);
+    state.recoveryQuietTimer = setTimeout(() => runScheduledRecovery(epoch, routeKeySnapshot), RECOVERY_QUIET_MS);
+    if (!state.recoveryTimeoutTimer) state.recoveryTimeoutTimer = setTimeout(() => runScheduledRecovery(epoch, routeKeySnapshot), RECOVERY_TIMEOUT_MS);
+  }
+
+  function runScheduledRecovery(epoch, routeKeySnapshot) {
+    if (epoch !== state.recoveryEpoch || routeKeySnapshot !== state.project.route_key || routeKeySnapshot !== state.recoveryObservedRouteKey) return;
+    clearTimeout(state.recoveryQuietTimer);
+    clearTimeout(state.recoveryTimeoutTimer);
+    state.recoveryQuietTimer = 0;
+    state.recoveryTimeoutTimer = 0;
+    queueMicrotask(() => {
+      if (epoch !== state.recoveryEpoch || routeKeySnapshot !== state.project.route_key) return;
+      renderPinsForResolvedMarks({ commit: true, epoch, routeKey: routeKeySnapshot });
+      if (state.panelOpen) {
+        const list = app.querySelector(".panel .marks");
+        if (list) renderPanelList(list);
+      }
+      renderShell();
+    });
+  }
+
   function handleRouteChange() {
     if (state.picking) {
       stopPicking({ restoreFocus: false });
@@ -1189,12 +1259,14 @@
     }
     state.suppressedPointer = null;
     state.project = projectScope();
-    renderPins();
+    for (const pin of state.pins.values()) pin.remove();
+    state.pins.clear();
     if (state.panelOpen) {
       const list = app.querySelector(".panel .marks");
       if (list) renderPanelList(list);
     }
     renderShell();
+    scheduleMarkRecovery("route");
   }
 
   function patchHistoryMethod(name) {

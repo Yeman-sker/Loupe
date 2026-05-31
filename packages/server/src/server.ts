@@ -403,6 +403,7 @@ async function upsertMark(store: MarkStore, annotation: Annotation): Promise<voi
   const projectId = annotation.project.project_id;
   const sessionId = annotation.project.session_id;
   const project = (store.envelope.projects[projectId] ??= { sessions: {}, tombstones: [] });
+  if (project.tombstones.includes(annotation.id)) return;
   const session = (project.sessions[sessionId] ??= { marks: [] });
   const index = session.marks.findIndex((mark) => mark.id === annotation.id);
   if (index === -1) session.marks.push(annotation);
@@ -533,7 +534,7 @@ async function deleteMark(store: MarkStore, args: Record<string, unknown>): Prom
       break;
     }
   }
-  result.project.tombstones.push(result.mark.id);
+  if (!result.project.tombstones.includes(result.mark.id)) result.project.tombstones.push(result.mark.id);
   await saveStore(store);
   return { kind: "ok", value: { ok: true, deleted_at: deletedAt } };
 }

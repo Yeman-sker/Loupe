@@ -100,6 +100,11 @@ export type SyncAnnotationResult =
   | { ok: true; mark: Annotation }
   | { ok: false; mark: Annotation; error: string };
 
+export type RetryUnsyncedResult = {
+  attempted: number;
+  results: SyncAnnotationResult[];
+};
+
 export function session_marks_key(project_id: string, session_id: string): string {
   return storage_keys.session_marks(project_id, session_id);
 }
@@ -227,17 +232,21 @@ export async function sync_annotation_to_daemon(
     });
     if (!response.ok) throw new Error(`POST /v1/marks failed with ${response.status}`);
 
-    const synced_mark = with_sync(syncing_mark, {
+    const current_mark = await read_stored_mark(deps.store, marks_key, mark.id);
+    if (current_mark !== undefined && current_mark.lifecycle.updated_at !== mark.lifecycle.updated_at) return { ok: true, mark: current_mark };
+    const synced_mark = with_sync(current_mark ?? syncing_mark, {
       status: "synced",
-      retry_count: syncing_mark.sync.retry_count,
+      retry_count: (current_mark ?? syncing_mark).sync.retry_count,
       last_synced_at: deps.now(),
     });
     await replace_stored_mark(deps.store, marks_key, synced_mark);
     return { ok: true, mark: synced_mark };
   } catch (error) {
-    const failed_mark = with_sync(syncing_mark, {
+    const current_mark = await read_stored_mark(deps.store, marks_key, mark.id);
+    const failed_base = current_mark ?? syncing_mark;
+    const failed_mark = with_sync(failed_base, {
       status: "failed",
-      retry_count: syncing_mark.sync.retry_count + 1,
+      retry_count: failed_base.sync.retry_count + 1,
       last_error: error_message(error),
     });
     await replace_stored_mark(deps.store, marks_key, failed_mark);
@@ -288,8 +297,12 @@ export async function reconcile_daemon_marks(
       }
       continue;
     }
+    daemon_by_id.delete(local_mark.id);
+    next_marks.push(should_preserve_unsynced_local(local_mark, daemon_mark) ? local_mark : reconcile_local_mark(local_mark, daemon_mark));
+  }
 
-    next_marks.push(reconcile_local_mark(local_mark, daemon_mark));
+  for (const daemon_mark of daemon_by_id.values()) {
+    next_marks.push(annotation_from_daemon_mark(daemon_mark));
   }
 
   await store.set({
@@ -298,6 +311,38 @@ export async function reconcile_daemon_marks(
   });
   return next_marks;
 }
+
+export async function retry_unsynced_annotations(
+  deps: DaemonSyncDependencies,
+  options: DaemonRequestOptions,
+  scope: ReconcileScope,
+): Promise<RetryUnsyncedResult> {
+  const marks_key = session_marks_key(scope.project_id, scope.session_id);
+  const local_marks = read_annotation_array(await deps.store.get(marks_key));
+  const retryable = local_marks.filter(
+    (mark) =>
+      mark.project.project_id === scope.project_id &&
+      mark.project.session_id === scope.session_id &&
+      (mark.sync.status === "local_only" || mark.sync.status === "failed"),
+  );
+  const results: SyncAnnotationResult[] = [];
+  for (const mark of retryable) results.push(await sync_annotation_to_daemon(deps, options, mark));
+  return { attempted: retryable.length, results };
+}
+
+export async function reconcile_on_service_worker_wake(
+  deps: DaemonSyncDependencies,
+  options: DaemonRequestOptions,
+  scope: ProjectScopeWithUrl,
+): Promise<Annotation[]> {
+  await retry_unsynced_annotations(deps, options, { project_id: scope.project_id, session_id: scope.session_id });
+  try {
+    return await fetch_and_reconcile_daemon_marks(deps, options, scope);
+  } catch {
+    return read_annotation_array(await deps.store.get(session_marks_key(scope.project_id, scope.session_id)));
+  }
+}
+
 
 export async function fetch_and_reconcile_daemon_marks(
   deps: Pick<DaemonSyncDependencies, "fetch" | "store">,
@@ -356,6 +401,14 @@ function replace_stored_mark(store: MarkStore, marks_key: string, mark: Annotati
   });
 }
 
+async function read_stored_mark(store: MarkStore, marks_key: string, mark_id: string): Promise<Annotation | undefined> {
+  return read_annotation_array(await store.get(marks_key)).find((mark) => mark.id === mark_id);
+}
+
+function should_preserve_unsynced_local(local_mark: Annotation, daemon_mark: AgentMark): boolean {
+  return (local_mark.sync.status === "local_only" || local_mark.sync.status === "failed") && local_mark.lifecycle.updated_at >= daemon_mark.lifecycle.updated_at;
+}
+
 function with_sync(mark: Annotation, sync: Annotation["sync"]): Annotation {
   return { ...mark, sync };
 }
@@ -385,6 +438,85 @@ function reconcile_local_mark(local_mark: Annotation, daemon_mark: AgentMark): A
         : {}),
     },
     sync: sync_synced(local_mark.sync),
+  };
+}
+
+function annotation_from_daemon_mark(daemon_mark: AgentMark): Annotation {
+  const resolved_at = daemon_mark.lifecycle.updated_at;
+  const project: ProjectScopeWithUrl = {
+    project_id: daemon_mark.project.project_id,
+    workspace_root_hash: daemon_mark.project.workspace_root_hash,
+    ...(daemon_mark.project.branch === undefined ? {} : { branch: daemon_mark.project.branch }),
+    origin: new URL(daemon_mark.project.url).origin,
+    url: daemon_mark.project.url,
+    route_key: daemon_mark.project.route_key,
+    session_id: daemon_mark.project.session_id,
+  };
+  const context_framework = daemon_mark.framework === undefined || !is_framework_name(daemon_mark.framework.name)
+    ? {}
+    : {
+        framework: {
+          name: daemon_mark.framework.name,
+          ...(daemon_mark.framework.component === undefined ? {} : { component: daemon_mark.framework.component }),
+          ...(daemon_mark.framework.source_hint === undefined
+            ? {}
+            : { source_hint: { file: daemon_mark.framework.source_hint, confidence: daemon_mark.target.confidence } }),
+        },
+      };
+
+  return {
+    schema_version: LOUPE_SCHEMA_VERSION,
+    id: daemon_mark.id,
+    project,
+    target: {
+      locator: {
+        ...(daemon_mark.target.frame_path === undefined ? {} : { frame_path: daemon_mark.target.frame_path }),
+        primary: { selector: daemon_mark.target.selector, strategy: daemon_mark.target.shadow_path === undefined ? "stable_attr" : "shadow_path" },
+        alternates: daemon_mark.target.path === undefined ? [] : [{ selector: daemon_mark.target.path, strategy: "nth_path" }],
+        evidence: {
+          tag: daemon_mark.target.tag,
+          ...(daemon_mark.target.classes === undefined ? {} : { classes: { stable: daemon_mark.target.classes, total: daemon_mark.target.classes.length } }),
+          ...(daemon_mark.target.text === undefined
+            ? {}
+            : { text: { normalized: daemon_mark.target.text, hash: "", length: daemon_mark.target.text.length } }),
+          nth_path: daemon_mark.target.path ?? daemon_mark.target.selector,
+          parent_chain: [],
+          ...(daemon_mark.target.shadow_path === undefined ? {} : { shadow_path: daemon_mark.target.shadow_path }),
+          ...(daemon_mark.target.boundary === undefined ? {} : { boundary: daemon_mark.target.boundary }),
+        },
+      },
+      ...(daemon_mark.target.boundary === undefined ? {} : { boundary: daemon_mark.target.boundary }),
+      resolution: {
+        locator_status: daemon_mark.target.locator_status,
+        confidence: daemon_mark.target.confidence,
+        matched_by: daemon_mark.target.matched_by,
+        resolved_at,
+      },
+    },
+    intent: {
+      comment: daemon_mark.intent.comment,
+      kind: is_intent_kind(daemon_mark.intent.kind) ? daemon_mark.intent.kind : "other",
+    },
+    context: {
+      element: {
+        tag: daemon_mark.target.tag,
+        ...(daemon_mark.target.classes === undefined ? {} : { classes: daemon_mark.target.classes }),
+        ...(daemon_mark.target.text === undefined ? {} : { text: daemon_mark.target.text }),
+        selector_preview: daemon_mark.target.selector_preview,
+      },
+      ...context_framework,
+      viewport: { width: 0, height: 0, dpr: 1 },
+      position: { x: 0, y: 0, width: 0, height: 0 },
+    },
+    sync: { status: "synced", retry_count: 0 },
+    media: daemon_mark.media,
+    replies: { items: [] },
+    lifecycle: {
+      task_status: daemon_mark.lifecycle.task_status,
+      created_at: daemon_mark.lifecycle.created_at,
+      updated_at: daemon_mark.lifecycle.updated_at,
+      ...(daemon_mark.lifecycle.task_status === "resolved" ? { task_resolved_at: daemon_mark.lifecycle.updated_at } : {}),
+    },
   };
 }
 
@@ -428,4 +560,8 @@ function error_message(error: unknown): string {
 
 function is_intent_kind(value: unknown): value is IntentKind {
   return value === "bug" || value === "copy" || value === "style" || value === "layout" || value === "question" || value === "other";
+}
+
+function is_framework_name(value: unknown): value is FrameworkName {
+  return value === "react" || value === "vue" || value === "svelte" || value === "angular" || value === "solid" || value === "unknown";
 }

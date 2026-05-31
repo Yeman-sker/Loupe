@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { error_codes, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe/shared";
+import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe/shared";
 import { ensure, parseCli, serve } from "./cli.js";
 import { createServer, ensureToken, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
@@ -27,10 +27,13 @@ type JsonRpcResponse = {
 
 describe("Loupe Phase 0 HTTP contract", () => {
   const token = "phase-0-test-token";
-  const server = createServer({ port: 0, token, version: "phase-0-test" });
+  let server: LoupeHttpServer;
+  let home = "";
   let baseUrl = "";
 
   before(async () => {
+    home = await mkdtemp(join(tmpdir(), "loupe-http-contract-"));
+    server = createServer({ home, port: 0, token, version: "phase-0-test" });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
@@ -46,6 +49,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
+    await rm(home, { recursive: true, force: true });
   });
 
   it("serves anonymous /health with Loupe identity", async () => {
@@ -185,6 +189,75 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal("context" in body.mark, false);
     assert.equal("replies" in body.mark, false);
     assert.equal("screenshot_id" in body.mark.media, false);
+  });
+
+  it("returns MCP AgentMarks with snake_case low-noise schema and no raw internals", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-contract-1", project_id: "mcp-project-contract", session_id: "mcp-session-contract" });
+    annotation.context.layout = { display: "grid", position: "absolute", box_sizing: "border-box", flex_direction: "column", gap: "8px" };
+    annotation.context.framework = { name: "react", component: "SecretButton", source_hint: { file: "src/SecretButton.tsx", line: 42, confidence: 0.9 } };
+    annotation.sync = { status: "failed", retry_count: 3, last_error: "token expired", last_synced_at: "2026-05-31T00:01:00.000Z" };
+    annotation.media = { has_screenshot: true, screenshot_id: "shot-secret" };
+    annotation.replies = { items: [{ author: "agent", text: "internal reply", at: "2026-05-31T00:02:00.000Z" }] };
+
+    await assertOk(await postMark(baseUrl, token, annotation));
+    const body = await callMcpTool(baseUrl, token, "get_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-contract");
+
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "mcp-contract");
+    assert.deepEqual(body.result, expectedAgentMark(annotation));
+    assert.equal(is_agent_mark(body.result), true);
+    assertAgentMarkLowNoise(body.result as AgentMark);
+    assertNoLeakedKeys(body.result, [
+      "schema_version",
+      "sync",
+      "context",
+      "layout",
+      "position",
+      "viewport",
+      "replies",
+      "token",
+      "last_error",
+      "last_synced_at",
+      "retry_count",
+      "screenshot_id",
+      "screenshot_bytes",
+      "storage_key",
+      "sessions",
+      "tombstones",
+      "task_resolved_at",
+      "deleted_at",
+      "workspaceRootHash",
+      "routeKey",
+      "selectorPreview",
+      "hasScreenshot",
+    ]);
+  });
+
+  it("returns project-scoped MCP lists without mixing same-origin marks", async () => {
+    const origin = "https://mcp-clean-project.test";
+    const first = sampleAnnotation({ id: "mcp-clean-project-1", project_id: "mcp-clean-project-a", session_id: "mcp-clean-session-a", origin, url: `${origin}/shared`, route_key: "/shared" });
+    const second = sampleAnnotation({ id: "mcp-clean-project-2", project_id: "mcp-clean-project-b", session_id: "mcp-clean-session-b", origin, url: `${origin}/shared`, route_key: "/shared" });
+    await assertOk(await postMark(baseUrl, token, first));
+    await assertOk(await postMark(baseUrl, token, second));
+
+    const firstList = await callMcpTool(baseUrl, token, "list_marks", { project_id: first.project.project_id }, "mcp-clean-first");
+    const secondList = await callMcpTool(baseUrl, token, "list_marks", { project_id: second.project.project_id }, "mcp-clean-second");
+
+    assert.deepEqual(firstList.result, { project: candidateFor(first), marks: [expectedAgentMark(first)] });
+    assert.deepEqual(secondList.result, { project: candidateFor(second), marks: [expectedAgentMark(second)] });
+  });
+
+  it("rejects UUID-like bare-id MCP get, resolve, and delete", async () => {
+    const annotation = sampleAnnotation({ id: "123e4567-e89b-12d3-a456-426614174000", project_id: "mcp-project-uuid", session_id: "mcp-session-uuid" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    for (const [tool, id] of [["get_mark", "mcp-uuid-get"], ["resolve_mark", "mcp-uuid-resolve"], ["delete_mark", "mcp-uuid-delete"]] as const) {
+      const body = await callMcpTool(baseUrl, token, tool, { id: annotation.id }, id);
+      assert.equal(body.jsonrpc, "2.0");
+      assert.equal(body.id, id);
+      assert.equal(body.error?.data?.code, error_codes.scope_required);
+      assert.equal(body.result, undefined);
+    }
   });
 
   it("returns a Save-to-Agent readable mark through MCP list_marks under the daemon-online gate", async () => {
@@ -419,6 +492,54 @@ describe("Loupe Phase 3 marks store health", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("initializes an empty marks store after backing up corrupt marks.json", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const token = "phase-4-corrupt-init-token";
+    await writeFile(join(home, "marks.json"), "{not-json", "utf8");
+    const server = createServer({ home, port: 0, token, version: "phase-4-corrupt-init-test" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/marks?project_id=empty-after-corrupt`, { headers: authHeaders(token) });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { project: { project_id: "empty-after-corrupt" }, marks: [] });
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("persists delete tombstones and rejects deleted mark resurrection after restart", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const token = "phase-4-tombstone-token";
+    const annotation = sampleAnnotation({ id: "tombstone-resurrection", project_id: "tombstone-project", session_id: "tombstone-session" });
+    let server: LoupeHttpServer | undefined = createServer({ home, port: 0, token, version: "phase-4-tombstone-test" });
+    try {
+      await listenEphemeral(server);
+      let address = server.address() as AddressInfo;
+      let baseUrl = `http://127.0.0.1:${address.port}`;
+      await assertOk(await postMark(baseUrl, token, annotation));
+      const deleted = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { method: "DELETE", headers: authHeaders(token) });
+      assert.equal(deleted.status, 200);
+      await closeServer(server);
+      server = undefined;
+
+      server = createServer({ home, port: 0, token, version: "phase-4-tombstone-test" });
+      await listenEphemeral(server);
+      address = server.address() as AddressInfo;
+      baseUrl = `http://127.0.0.1:${address.port}`;
+      await assertOk(await postMark(baseUrl, token, annotation));
+
+      const list = await fetch(`${baseUrl}/v1/marks?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+      assert.equal(list.status, 200);
+      assert.deepEqual(await list.json(), { project: { project_id: annotation.project.project_id }, marks: [] });
+    } finally {
+      if (server?.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Loupe Phase 0 CLI", () => {
@@ -454,6 +575,34 @@ describe("Loupe Phase 0 CLI", () => {
       );
     } finally {
       await closeServer(dummy);
+    }
+  });
+
+  it("classifies Loupe health and non-Loupe health-shaped services during ensure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const loupe = createNodeServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, name: LOUPE_DAEMON_NAME, version: "phase-4-health", port: (loupe.address() as AddressInfo).port, requires_auth: true }));
+    });
+    const other = createNodeServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, name: LOUPE_DAEMON_NAME, version: "phase-4-health", port: 0, requires_auth: false }));
+    });
+    try {
+      await listenEphemeral(loupe);
+      let address = loupe.address() as AddressInfo;
+      assert.equal(await ensure({ home, port: address.port }), undefined);
+
+      await listenEphemeral(other);
+      address = other.address() as AddressInfo;
+      await assert.rejects(
+        ensure({ home, port: address.port }),
+        new Error(`Port ${address.port} is occupied by a non-Loupe service.`),
+      );
+    } finally {
+      if (loupe.listening) await closeServer(loupe);
+      if (other.listening) await closeServer(other);
+      await rm(home, { recursive: true, force: true });
     }
   });
 });
@@ -569,7 +718,7 @@ function expectedAgentMark(annotation: Annotation): AgentMark {
   if (annotation.context.element.classes !== undefined) target.classes = annotation.context.element.classes;
   if (annotation.target.locator.evidence.nth_path !== undefined) target.path = annotation.target.locator.evidence.nth_path;
 
-  return {
+  const mark: AgentMark = {
     id: annotation.id,
     project,
     intent: { comment: annotation.intent.comment, kind: annotation.intent.kind },
@@ -581,6 +730,18 @@ function expectedAgentMark(annotation: Annotation): AgentMark {
       updated_at: annotation.lifecycle.updated_at,
     },
   };
+
+  const framework = annotation.context.framework;
+  if (framework !== undefined) {
+    const agentFramework: NonNullable<AgentMark["framework"]> = { name: framework.name };
+    if (framework.component !== undefined) agentFramework.component = framework.component;
+    if (framework.source_hint?.file !== undefined) {
+      agentFramework.source_hint = framework.source_hint.line === undefined ? framework.source_hint.file : `${framework.source_hint.file}:${framework.source_hint.line}`;
+    }
+    mark.framework = agentFramework;
+  }
+
+  return mark;
 }
 
 function candidateFor(annotation: Annotation): Record<string, string> {
@@ -633,6 +794,15 @@ function assertAgentMarkLowNoise(mark: AgentMark): void {
   assert.equal("context" in mark, false);
   assert.equal("replies" in mark, false);
   assert.equal("screenshot_id" in mark.media, false);
+  assert.equal("screenshotId" in mark.media, false);
+}
+
+function assertNoLeakedKeys(value: unknown, disallowed: readonly string[]): void {
+  if (!isRecord(value) && !Array.isArray(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    assert.equal(disallowed.includes(key), false, key);
+    assertNoLeakedKeys(child, disallowed);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
