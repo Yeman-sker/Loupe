@@ -247,6 +247,16 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.match(function_body(source, "repositionPins"), /commit: false/);
   });
 
+  it("MV3 manifest exposes a visible popup for current-site authorization", async () => {
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { action?: { default_title?: string; default_popup?: string }; background: { service_worker: string } };
+    assert.equal(manifest.action?.default_title, "Authorize Loupe on this page");
+    assert.equal(manifest.action?.default_popup, "src/popup.html");
+    const popup_path = path.join(EXTENSION_ROOT, manifest.action.default_popup);
+    const popup_source = await readFile(popup_path, "utf8");
+    assert.match(popup_source, /Authorize current site/);
+    assert.match(popup_source, /src="popup\.js"/);
+  });
+
   it("MV3 manifest background service-worker wake retries locals then reconciles daemon-only marks", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { background: { service_worker: string } };
     assert.equal(manifest.background.service_worker, "src/background.js");

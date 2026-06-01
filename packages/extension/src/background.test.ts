@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decide_origin_authorization, handle_service_worker_wake, request_origin_authorization } from "./background.js";
+import { decide_origin_authorization, handle_service_worker_wake, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {
@@ -125,6 +125,55 @@ describe("background origin authorization", () => {
       origin: "https://app.example.test",
       origin_pattern: "https://app.example.test/*",
     });
+  });
+
+  it("requests active-tab origin permission and reloads after grant", async () => {
+    const requested: string[][] = [];
+    const reloaded: number[] = [];
+
+    const decision = await request_active_tab_origin_authorization(
+      { id: 7, url: "http://127.0.0.1:4172/" },
+      async () => false,
+      async (origins) => {
+        requested.push([...origins]);
+        return true;
+      },
+      async (tab_id) => void reloaded.push(tab_id),
+    );
+
+    assert.deepEqual(requested, [["http://127.0.0.1:4172/*"]]);
+    assert.deepEqual(reloaded, [7]);
+    assert.deepEqual(decision, {
+      ok: true,
+      authorized: true,
+      origin: "http://127.0.0.1:4172",
+      origin_pattern: "http://127.0.0.1:4172/*",
+    });
+  });
+
+  it("requests current active tab origin permission from popup flow", async () => {
+    const requested: string[][] = [];
+    const reloaded: number[] = [];
+
+    const decision = await request_current_tab_origin_authorization(
+      {
+        query: async (query_info) => {
+          assert.deepEqual(query_info, { active: true, currentWindow: true });
+          return [{ id: 9, url: "http://127.0.0.1:4172/dashboard" }];
+        },
+        reload: async (tab_id) => void reloaded.push(tab_id),
+      },
+      async () => false,
+      async (origins) => {
+        requested.push([...origins]);
+        return true;
+      },
+    );
+
+    assert.deepEqual(requested, [["http://127.0.0.1:4172/*"]]);
+    assert.deepEqual(reloaded, [9]);
+    assert.equal(decision.ok, true);
+    assert.equal(decision.authorized, true);
   });
 });
 

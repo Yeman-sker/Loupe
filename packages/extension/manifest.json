@@ -6,6 +6,10 @@
   "permissions": ["activeTab", "storage"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "host_permissions": [],
+  "action": {
+    "default_title": "Authorize Loupe on this page",
+    "default_popup": "src/popup.html"
+  },
   "background": {
     "service_worker": "src/background.js",
     "type": "module"

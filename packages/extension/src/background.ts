@@ -18,6 +18,7 @@ export type ChromeLike = {
         listener: (message: unknown, sender: ChromeMessageSender, sendResponse: (response: unknown) => void) => boolean,
       ): void;
     };
+    readonly lastError?: { readonly message?: string };
   };
   readonly storage: {
     readonly session: {
@@ -32,7 +33,18 @@ export type ChromeLike = {
     contains(permissions: { origins: string[] }): Promise<boolean>;
     request(permissions: { origins: string[] }): Promise<boolean>;
   };
+  readonly tabs?: ChromeTabsLike;
 };
+
+type ChromeTabLike = Readonly<{
+  id?: number;
+  url?: string;
+}>;
+
+type ChromeTabsLike = Readonly<{
+  query(query_info: { active: boolean; currentWindow: boolean }): Promise<ChromeTabLike[]>;
+  reload(tab_id: number): Promise<void>;
+}>;
 
 export type ChromeMessageSender = {
   readonly url?: string;
@@ -124,6 +136,27 @@ export async function request_origin_authorization(
   } catch (error) {
     return { ok: false, authorized: false, error: error_message(error), origin: decision.origin };
   }
+}
+
+export async function request_active_tab_origin_authorization(
+  tab: ChromeTabLike,
+  contains: OriginPermissionProbe,
+  request: OriginPermissionProbe,
+  reload_tab?: (tab_id: number) => Promise<void>,
+): Promise<AuthorizationDecision> {
+  const decision = await request_origin_authorization({}, tab.url === undefined ? {} : { tab: { url: tab.url } }, contains, request);
+  if (decision.ok && decision.authorized && tab.id !== undefined && reload_tab !== undefined) await reload_tab(tab.id);
+  return decision;
+}
+
+export async function request_current_tab_origin_authorization(
+  tabs: ChromeTabsLike,
+  contains: OriginPermissionProbe,
+  request: OriginPermissionProbe,
+): Promise<AuthorizationDecision> {
+  const tab = (await tabs.query({ active: true, currentWindow: true }))[0];
+  const decision = await request_active_tab_origin_authorization(tab ?? {}, contains, request, tabs.reload);
+  return decision;
 }
 
 export function service_worker_wake_state(now: string): Record<string, unknown> {
