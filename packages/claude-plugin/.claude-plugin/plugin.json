@@ -6,7 +6,6 @@
     "name": "Loupe"
   },
   "commands": "./commands",
-  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "loupe": {
       "type": "stdio",
