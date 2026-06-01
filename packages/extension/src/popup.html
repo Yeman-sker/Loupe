@@ -5,7 +5,7 @@
     <title>Loupe</title>
     <style>
       body {
-        width: 280px;
+        width: 320px;
         margin: 0;
         padding: 14px;
         font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -16,9 +16,27 @@
         margin: 0 0 8px;
         font-size: 15px;
       }
+      h2 {
+        margin: 14px 0 8px;
+        font-size: 13px;
+      }
       p {
         margin: 0 0 12px;
         color: #475569;
+      }
+      label {
+        display: block;
+        margin: 8px 0 4px;
+        color: #334155;
+        font-weight: 600;
+      }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 8px 9px;
+        font: inherit;
       }
       button {
         width: 100%;
@@ -30,6 +48,10 @@
         font: inherit;
         font-weight: 650;
         cursor: pointer;
+      }
+      button.secondary {
+        margin-top: 10px;
+        background: #0f172a;
       }
       button:disabled {
         cursor: default;
@@ -47,7 +69,16 @@
   </head>
   <body>
     <h1>Loupe</h1>
-    <p>Authorize Loupe on the current page, then use Option+L.</p>
+    <p>Pair the local daemon, authorize this page, then use Option+L.</p>
+
+    <h2>Daemon pairing</h2>
+    <label for="base-url">Daemon URL</label>
+    <input id="base-url" type="url" value="http://127.0.0.1:7373" autocomplete="off">
+    <label for="token">Token</label>
+    <input id="token" type="password" placeholder="Paste ~/.loupe/token" autocomplete="off">
+    <button id="pair" class="secondary" type="button">Save daemon pairing</button>
+
+    <h2>Site permission</h2>
     <button id="authorize" type="button">Authorize current site</button>
     <div id="status" role="status"></div>
     <script src="popup.js"></script>
