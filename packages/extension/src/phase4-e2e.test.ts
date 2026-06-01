@@ -189,6 +189,11 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.match(function_body(source, "syncSavedMark"), /status: "failed"/);
     assert.match(function_body(source, "syncSavedMark"), /retry_count: \(current\.sync\?\.retry_count \|\| 0\) \+ 1/);
     assert.match(function_body(source, "syncSavedMark"), /last_error: errorMessage\(error\)/);
+    assert.match(function_body(source, "createAnnotation"), /candidates_considered: resolved\.candidates_considered/);
+    assert.match(function_body(source, "commitMarkResolution"), /candidates_considered: result\.candidates_considered/);
+    assert.match(function_body(source, "captureLocator"), /viewport_width: window\.innerWidth/);
+    assert.match(function_body(source, "captureLocator"), /viewport_height: window\.innerHeight/);
+    assert.match(function_body(source, "captureLocator"), /dpr: window\.devicePixelRatio \|\| 1/);
     assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.session/);
     assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.local/);
     assert.doesNotMatch(source, /sessionStorage\.setItem\([^)]*token|dataset\.[A-Za-z0-9_]*token/i);

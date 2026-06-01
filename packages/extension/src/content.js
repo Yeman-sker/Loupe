@@ -465,6 +465,7 @@
           locator_status: resolved.locator_status,
           confidence: resolved.confidence,
           matched_by: resolved.matched_by,
+          candidates_considered: resolved.candidates_considered,
           resolved_at: now,
         },
       },
@@ -692,6 +693,7 @@
       locator_status: result.locator_status,
       confidence: result.confidence,
       matched_by: result.matched_by,
+      candidates_considered: result.candidates_considered,
       resolved_at: new Date().toISOString(),
     };
     return true;
@@ -946,7 +948,7 @@
     if (element.classList.length > 0) evidence.classes = { stable: stableClasses(element), total: element.classList.length };
     if (normalizedText) evidence.text = { normalized: normalizedText, hash: hashText(normalizedText), length: normalizeText(element.textContent || "").length };
     const rect = element.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) evidence.geometry = { x: round(rect.left + window.scrollX), y: round(rect.top + window.scrollY), width: round(rect.width), height: round(rect.height) };
+    if (rect.width > 0 && rect.height > 0) evidence.geometry = { x: round(rect.left + window.scrollX), y: round(rect.top + window.scrollY), width: round(rect.width), height: round(rect.height), viewport_width: window.innerWidth, viewport_height: window.innerHeight, dpr: window.devicePixelRatio || 1 };
     const selectors = selectorCascade(element, evidence, selectorRoot);
     return { primary: selectors[0] || { selector: evidence.nth_path, strategy: "nth_path" }, alternates: selectors.slice(1), evidence };
   }
