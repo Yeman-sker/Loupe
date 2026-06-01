@@ -2,6 +2,9 @@
   const ROOT_ID = "loupe-extension-root";
   const SCHEMA_VERSION = 1;
   const MESSAGE_GET_AUTH = "loupe.origin_auth.get";
+  const LOUPE_AUTH_SCHEME = "Bearer";
+  const SETTINGS_KEY = "loupe:v1:settings";
+  const DAEMON_CONFIG_KEYS = Object.freeze([SETTINGS_KEY, "loupe:v1:daemon", "loupe:daemon", "daemon"]);
   const SESSION_ID_KEY = "loupe:v1:extension:session_id";
   const INTERACTIVE_SELECTOR = [
     "a[href]",
@@ -443,6 +446,7 @@
     renderPins();
     renderShell("Saved local_only mark.");
     restorePreviousFocus();
+    void syncSavedMark(mark);
   }
 
   function createAnnotation(element, comment, kind) {
@@ -536,6 +540,90 @@
       return itemProject.project_id === projectId && itemProject.session_id === sessionId && !item.lifecycle?.deleted_at;
     });
     await chrome.storage.local.set({ [sessionMarksKey(projectId, sessionId)]: marks });
+  }
+
+  async function syncSavedMark(mark) {
+    const daemon = await readDaemonConfig();
+    if (!daemon) return;
+    const marksKey = sessionMarksKey(mark.project.project_id, mark.project.session_id);
+    await replaceStoredMark(marksKey, { ...mark, sync: { status: "syncing", retry_count: mark.sync?.retry_count || 0 } });
+    try {
+      const response = await fetch(joinDaemonUrl(daemon.base_url, "/v1/marks"), {
+        method: "POST",
+        headers: { authorization: `${LOUPE_AUTH_SCHEME} ${daemon.token}`, "content-type": "application/json" },
+        body: JSON.stringify(mark),
+      });
+      if (!response.ok) throw new Error(`POST /v1/marks failed with ${response.status}`);
+      const current = (await readStoredMark(marksKey, mark.id)) || mark;
+      if (current.lifecycle?.updated_at !== mark.lifecycle?.updated_at) return;
+      await replaceStoredMark(marksKey, { ...current, sync: { status: "synced", retry_count: current.sync?.retry_count || 0, last_synced_at: new Date().toISOString() } });
+    } catch (error) {
+      const current = (await readStoredMark(marksKey, mark.id)) || mark;
+      await replaceStoredMark(marksKey, { ...current, sync: { status: "failed", retry_count: (current.sync?.retry_count || 0) + 1, last_error: errorMessage(error) } });
+    }
+    renderPins();
+    if (state.panelOpen) {
+      const list = app.querySelector(".panel .marks");
+      if (list) renderPanelList(list);
+    }
+    renderShell();
+  }
+
+  async function replaceStoredMark(marksKey, mark) {
+    const stored = await chrome.storage.local.get(marksKey);
+    const marks = Array.isArray(stored?.[marksKey]) ? stored[marksKey] : [];
+    const index = marks.findIndex((item) => item.id === mark.id);
+    const next = index === -1 ? [...marks, mark] : [...marks.slice(0, index), mark, ...marks.slice(index + 1)];
+    const localIndex = state.marks.findIndex((item) => item.id === mark.id);
+    if (localIndex === -1) state.marks.push(mark);
+    else state.marks = [...state.marks.slice(0, localIndex), mark, ...state.marks.slice(localIndex + 1)];
+    await chrome.storage.local.set({ [marksKey]: next });
+  }
+
+  async function readStoredMark(marksKey, markId) {
+    const stored = await chrome.storage.local.get(marksKey);
+    return (Array.isArray(stored?.[marksKey]) ? stored[marksKey] : []).find((mark) => mark.id === markId);
+  }
+
+  async function readDaemonConfig() {
+    const sessionConfig = await readDaemonConfigFromArea(chrome.storage.session);
+    if (sessionConfig) return sessionConfig;
+    return readDaemonConfigFromArea(chrome.storage.local);
+  }
+
+  async function readDaemonConfigFromArea(area) {
+    if (!area || typeof area.get !== "function") return null;
+    try {
+      const stored = await area.get(DAEMON_CONFIG_KEYS);
+      return daemonConfigFromStored(stored);
+    } catch {
+      return null;
+    }
+  }
+
+  function daemonConfigFromStored(stored) {
+    if (!stored || typeof stored !== "object") return null;
+    for (const key of DAEMON_CONFIG_KEYS) {
+      const config = daemonConfigFromValue(stored[key]);
+      if (config) return config;
+    }
+    return daemonConfigFromValue(stored);
+  }
+
+  function daemonConfigFromValue(value) {
+    if (!value || typeof value !== "object") return null;
+    const candidate = value.daemon && typeof value.daemon === "object" ? value.daemon : value;
+    const baseUrl = typeof candidate.base_url === "string" ? candidate.base_url : typeof candidate.daemon_base_url === "string" ? candidate.daemon_base_url : "";
+    const token = typeof candidate.token === "string" ? candidate.token : typeof candidate.daemon_token === "string" ? candidate.daemon_token : "";
+    return baseUrl && token ? { base_url: baseUrl, token } : null;
+  }
+
+  function joinDaemonUrl(baseUrl, path) {
+    return new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).href;
+  }
+
+  function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
   }
 
   function normalizeMarkProject(mark, projectId = state.project.project_id, sessionId = state.sessionId) {

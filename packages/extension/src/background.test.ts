@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decide_origin_authorization, request_origin_authorization } from "./background.js";
+import { decide_origin_authorization, handle_service_worker_wake, request_origin_authorization } from "./background.js";
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {
@@ -125,5 +125,109 @@ describe("background origin authorization", () => {
       origin: "https://app.example.test",
       origin_pattern: "https://app.example.test/*",
     });
+  });
+});
+
+describe("background service worker wake", () => {
+  it("retries unsynced marks and reconciles daemon marks without storing the token", async () => {
+    const key = "loupe:v1:project:project-1:session:session-1:marks";
+    const local_mark = {
+      id: "mark-1",
+      project: { project_id: "project-1", session_id: "session-1" },
+      target: { resolution: {} },
+      intent: { comment: "local", kind: "copy" },
+      lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", task_status: "open" },
+      sync: { status: "local_only", retry_count: 0 },
+    };
+    const store: Record<string, unknown> = { [key]: [local_mark] };
+    const session_sets: Record<string, unknown>[] = [];
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async (items) => void session_sets.push(items) },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake", scope: { project_id: "project-1", session_id: "session-1" }, daemon: { base_url: "http://127.0.0.1:7373", token: "secret-token" } },
+      "2026-01-01T00:00:01.000Z",
+      async (url, init) => {
+        requests.push({ url: String(url), init });
+        if (init?.method === "POST") return new Response("{}", { status: 200 });
+        return Response.json({
+          marks: [
+            {
+              id: "mark-1",
+              project: { project_id: "project-1", session_id: "session-1" },
+              target: { selector: "#mark", locator_status: "resolved", confidence: 1, matched_by: ["daemon"] },
+              intent: { comment: "daemon", kind: "copy" },
+              lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:02.000Z", task_status: "resolved" },
+            },
+          ],
+        });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/marks");
+    assert.equal(requests[0]?.init?.method, "POST");
+    assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
+    assert.equal(requests[1]?.url, "http://127.0.0.1:7373/v1/marks?project_id=project-1&session_id=session-1");
+    assert.equal(requests[1]?.init?.method, "GET");
+    assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
+    assert.equal(JSON.stringify(session_sets).includes("secret-token"), false);
+    assert.equal(JSON.stringify(store).includes("secret-token"), false);
+    assert.equal(((store[key] as Array<{ sync: { status: string }; intent: { comment: string } }>)[0]?.sync.status), "synced");
+    assert.equal(((store[key] as Array<{ sync: { status: string }; intent: { comment: string } }>)[0]?.intent.comment), "daemon");
+  });
+
+  it("preserves newer unsynced local marks during daemon reconciliation", async () => {
+    const key = "loupe:v1:project:project-1:session:session-1:marks";
+    const store: Record<string, unknown> = {
+      [key]: [
+        {
+          id: "mark-1",
+          project: { project_id: "project-1", session_id: "session-1" },
+          target: { resolution: {} },
+          intent: { comment: "newer local", kind: "copy" },
+          lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:03.000Z", task_status: "open" },
+          sync: { status: "failed", retry_count: 1 },
+        },
+      ],
+    };
+
+    await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { project_id: "project-1", session_id: "session-1", base_url: "http://127.0.0.1:7373", token: "secret-token" },
+      "2026-01-01T00:00:04.000Z",
+      async (_url, init) => {
+        if (init?.method === "POST") return new Response("daemon unavailable", { status: 503 });
+        return Response.json({
+          marks: [
+            {
+              id: "mark-1",
+              project: { project_id: "project-1", session_id: "session-1" },
+              target: { selector: "#mark", locator_status: "resolved", confidence: 1 },
+              intent: { comment: "older daemon", kind: "copy" },
+              lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:02.000Z", task_status: "resolved" },
+            },
+          ],
+        });
+      },
+    );
+
+    const stored_mark = (store[key] as Array<{ sync: { status: string; retry_count: number }; intent: { comment: string } }>)[0];
+    assert.equal(stored_mark?.sync.status, "failed");
+    assert.equal(stored_mark?.sync.retry_count, 2);
+    assert.equal(stored_mark?.intent.comment, "newer local");
   });
 });

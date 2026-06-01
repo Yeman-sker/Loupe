@@ -175,6 +175,25 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
   });
 
+  it("MV3 manifest content runtime syncs saved marks only when daemon config exists without token exposure", async () => {
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
+    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
+    const source = await readFile(content_path, "utf8");
+
+    assert.match(source, /void syncSavedMark\(mark\)/);
+    assert.match(source, /fetch\(joinDaemonUrl\(daemon\.base_url, "\/v1\/marks"\), \{/);
+    assert.match(source, /authorization: `\$\{LOUPE_AUTH_SCHEME\} \$\{daemon\.token\}`/);
+    assert.match(source, /"content-type": "application\/json"/);
+    assert.match(function_body(source, "syncSavedMark"), /status: "synced"/);
+    assert.match(function_body(source, "syncSavedMark"), /last_synced_at: new Date\(\)\.toISOString\(\)/);
+    assert.match(function_body(source, "syncSavedMark"), /status: "failed"/);
+    assert.match(function_body(source, "syncSavedMark"), /retry_count: \(current\.sync\?\.retry_count \|\| 0\) \+ 1/);
+    assert.match(function_body(source, "syncSavedMark"), /last_error: errorMessage\(error\)/);
+    assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.session/);
+    assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.local/);
+    assert.doesNotMatch(source, /sessionStorage\.setItem\([^)]*token|dataset\.[A-Za-z0-9_]*token/i);
+  });
+
   it("MV3 extension host authorization helper grants only eligible http origins", async () => {
     const seen: string[][] = [];
     const decision = await decide_origin_authorization({ origin: "https://app.example.test" }, {}, async (origins) => {
