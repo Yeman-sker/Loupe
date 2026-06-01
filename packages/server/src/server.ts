@@ -180,6 +180,14 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
 }
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse, context: RequestContext): Promise<void> {
+  writeCorsHeaders(response);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, { "content-length": 0 });
+    response.end();
+    return;
+  }
+
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
   if (request.method === "GET" && url.pathname === "/health") {
@@ -662,6 +670,13 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function writeCorsHeaders(response: ServerResponse): void {
+  response.setHeader("access-control-allow-origin", "*");
+  response.setHeader("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+  response.setHeader("access-control-allow-headers", "authorization,content-type");
+  response.setHeader("access-control-max-age", "600");
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {

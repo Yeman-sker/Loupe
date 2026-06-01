@@ -181,6 +181,22 @@ describe("Loupe Phase 0 HTTP contract", () => {
     });
   });
 
+
+  it("allows extension CORS preflight for protected mark sync", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5173",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.match(response.headers.get("access-control-allow-methods") ?? "", /POST/);
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /authorization/);
+  });
   it("stores a valid Annotation and returns a low-noise mark", async () => {
     const annotation = sampleAnnotation({ id: "rest-create-1", project_id: "rest-project-create", session_id: "rest-session-create" });
     const response = await postMark(baseUrl, token, annotation);
