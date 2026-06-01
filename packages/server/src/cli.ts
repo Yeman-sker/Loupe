@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
 import { createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 import { fileURLToPath } from "node:url";
 import { runMcpProxy } from "./mcp-proxy.js";
@@ -47,7 +48,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
       return 0;
     }
     if (parsed.command === "ensure") {
-      await ensure(parsed);
+      await ensure(parsed, stdout);
       return 0;
     }
     if (parsed.command === "init") return await init(parsed, stdout);
@@ -69,19 +70,31 @@ export async function serve(options: { port?: number; home?: string }): Promise<
   return server;
 }
 
-export async function ensure(options: { port?: number; home?: string }): Promise<LoupeHttpServer | undefined> {
+export async function ensure(options: { port?: number; home?: string }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): Promise<LoupeHttpServer | undefined> {
   const port = options.port ?? LOUPE_DEFAULT_PORT;
   const health = await probeHealth(port);
   if (health.status === "loupe") {
     const home = homeOption(options.home);
     await ensureToken(home);
     await writeServerStatus({ ...home, port: health.payload.port });
+    writeLine(stdout, `Loupe daemon already running on port ${health.payload.port}.`);
     return undefined;
   }
   if (health.status === "other") {
     throw new Error(`Port ${port} is occupied by a non-Loupe service.`);
   }
-  return serve({ ...options, port });
+
+  await init(options, { write() { return true; } });
+  const home = resolveLoupeHome(options.home);
+  const child = spawn(process.execPath, [process.argv[1] ?? fileURLToPath(import.meta.url), "serve", "--port", String(port), "--home", home], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+
+  await waitForLoupeDaemon(port);
+  writeLine(stdout, `Started Loupe daemon on port ${port}.`);
+  return undefined;
 }
 
 export function parseCli(argv: string[]): CliOptions {
@@ -404,6 +417,17 @@ function parsePort(value: string): number {
   const port = Number(value);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error(`Invalid port: ${value}`);
   return port;
+}
+
+async function waitForLoupeDaemon(port: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const health = await probeHealth(port);
+    if (health.status === "loupe") return;
+    if (health.status === "other") throw new Error(`Port ${port} became occupied by a non-Loupe service.`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for Loupe daemon on port ${port}.`);
 }
 
 async function listen(server: LoupeHttpServer, port: number): Promise<void> {
