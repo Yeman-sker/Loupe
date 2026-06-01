@@ -13,10 +13,18 @@ importers:
         version: 5.9.3
 
   packages/claude-plugin:
-    dependencies:
-      '@loupe/shared':
-        specifier: workspace:*
-        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.29
+        version: 22.19.19
+      tsx:
+        specifier: ^4.19.4
+        version: 4.22.3
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  packages/codex-plugin:
     devDependencies:
       '@types/node':
         specifier: ^22.15.29
@@ -30,7 +38,7 @@ importers:
 
   packages/extension:
     dependencies:
-      '@loupe/shared':
+      '@loupe-server/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -46,7 +54,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@loupe/shared':
+      '@loupe-server/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:

@@ -1,4 +1,4 @@
-import type { Annotation } from "@loupe/shared";
+import type { Annotation } from "@loupe-server/shared";
 
 export type PinDetailActionId = "copy_markdown" | "resolve" | "delete";
 

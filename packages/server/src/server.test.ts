@@ -5,8 +5,9 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
-import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe/shared";
+import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe-server/shared";
 import { ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
+import { forwardJsonRpcMessage, parseProxyArgs } from "./mcp-proxy.js";
 import { createServer, ensureToken, homeHashForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
 const originCases: ReadonlyArray<{ name: string; origin?: string }> = [
@@ -557,6 +558,9 @@ describe("Loupe Phase 0 CLI", () => {
     assert.deepEqual(parseCli(["status"]), { command: "status", port: LOUPE_DEFAULT_PORT });
     assert.deepEqual(parseCli(["logs"]), { command: "logs", port: LOUPE_DEFAULT_PORT });
     assert.deepEqual(parseCli(["status", "--port", "41234", "--home", "/tmp/loupe-test"]), { command: "status", port: 41234, home: "/tmp/loupe-test" });
+
+    assert.deepEqual(parseCli(["mcp-proxy"]), { command: "mcp-proxy", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseProxyArgs(["--url", "http://127.0.0.1:7000/mcp", "--token-path", "/tmp/loupe-token"]), { url: "http://127.0.0.1:7000/mcp", tokenPath: "/tmp/loupe-token" });
   });
 
   it("defaults direct serve calls to the Loupe default port", async () => {
@@ -935,6 +939,28 @@ describe("Loupe Phase 0 CLI", () => {
     } finally {
       if (loupe.listening) await closeServer(loupe);
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards stdio MCP payloads to daemon HTTP MCP with bearer token", async () => {
+    const token = "phase-5-proxy-token";
+    const server = createNodeServer(async (request, response) => {
+      assert.equal(request.method, "POST");
+      assert.equal(request.url, "/mcp");
+      assert.equal(request.headers.authorization, `Bearer ${token}`);
+      let body = "";
+      for await (const chunk of request) body += String(chunk);
+      assert.equal(body, JSON.stringify({ jsonrpc: "2.0", id: "proxy", method: "tools/list" }));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: "proxy", result: { tools: [] } }));
+    });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const body = await forwardJsonRpcMessage(`http://127.0.0.1:${address.port}/mcp`, token, JSON.stringify({ jsonrpc: "2.0", id: "proxy", method: "tools/list" }));
+      assert.equal(body, JSON.stringify({ jsonrpc: "2.0", id: "proxy", result: { tools: [] } }));
+    } finally {
+      if (server.listening) await closeServer(server);
     }
   });
 

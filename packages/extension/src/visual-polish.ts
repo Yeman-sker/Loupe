@@ -1,4 +1,4 @@
-import type { Annotation, LocatorStatus } from "@loupe/shared";
+import type { Annotation, LocatorStatus } from "@loupe-server/shared";
 
 export type TaskStatus = Annotation["lifecycle"]["task_status"];
 export type SyncStatus = Annotation["sync"]["status"];

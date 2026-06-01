@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
 import { describe, it } from "node:test";
-import { LOUPE_AUTH_SCHEME, storage_keys, type AgentMark, type Annotation, type Locator, type ProjectScopeWithUrl, type ResolveResult } from "@loupe/shared";
+import { LOUPE_AUTH_SCHEME, storage_keys, type AgentMark, type Annotation, type Locator, type ProjectScopeWithUrl, type ResolveResult } from "@loupe-server/shared";
 import {
   LOUPE_EXTENSION_ROOT_ID,
   bootstrap_content_root,

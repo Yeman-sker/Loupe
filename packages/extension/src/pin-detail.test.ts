@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LOUPE_SCHEMA_VERSION, type Annotation, type Locator, type ResolveResult } from "@loupe/shared";
+import { LOUPE_SCHEMA_VERSION, type Annotation, type Locator, type ResolveResult } from "@loupe-server/shared";
 import { build_pin_detail_view_model } from "./pin-detail.js";
 
 const PROJECT_ID = "project-abc";

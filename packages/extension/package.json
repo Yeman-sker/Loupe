@@ -8,7 +8,7 @@
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@loupe/shared": "workspace:*"
+    "@loupe-server/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",

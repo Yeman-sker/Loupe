@@ -924,7 +924,7 @@
     return Array.from(groups.values()).sort((a, b) => Number(b.current) - Number(a.current) || a.label.localeCompare(b.label));
   }
 
-  // MV3 loads this file directly as a content script, so these local implementations intentionally mirror @loupe/shared capture_locator/resolve wire output without exposing a bundled page API.
+  // MV3 loads this file directly as a content script, so these local implementations intentionally mirror @loupe-server/shared capture_locator/resolve wire output without exposing a bundled page API.
   function captureLocator(element) {
     const tag = element.localName.toLowerCase();
     const normalizedText = normalizeText(element.textContent || "").slice(0, 160);

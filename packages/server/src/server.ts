@@ -21,7 +21,7 @@ import {
   type ResolveMarkResponse,
   type ServerStatusFile,
   type StorageEnvelope,
-} from "@loupe/shared";
+} from "@loupe-server/shared";
 
 export type LoupeHomeOptions = {
   home?: string;

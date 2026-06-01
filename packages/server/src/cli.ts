@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
-import { assert_storage_envelope, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe/shared";
+import { fileURLToPath } from "node:url";
+import { runMcpProxy } from "./mcp-proxy.js";
+import { assert_storage_envelope, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe-server/shared";
 
-export type CliCommand = "serve" | "ensure" | "init" | "status" | "logs";
+export type CliCommand = "serve" | "ensure" | "init" | "status" | "logs" | "mcp-proxy";
 
 export type CliOptions = {
   command: CliCommand;
@@ -34,6 +38,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
   }
 
   try {
+    if (parsed.command === "mcp-proxy") {
+      await runMcpProxy(argv.slice(1));
+      return 0;
+    }
     if (parsed.command === "serve") {
       await serve(parsed);
       return 0;
@@ -79,12 +87,13 @@ export async function ensure(options: { port?: number; home?: string }): Promise
 export function parseCli(argv: string[]): CliOptions {
   const command = argv[0];
   if (!isCliCommand(command)) {
-    throw new Error("Expected command: serve, ensure, init, status, or logs.");
+    throw new Error("Expected command: serve, ensure, init, status, logs, or mcp-proxy.");
   }
 
   let port: number | undefined;
   let home: string | undefined;
   for (let index = 1; index < argv.length; index += 1) {
+    if (command === "mcp-proxy") break;
     const arg = argv[index];
     if (arg === "--port") {
       const value = argv[index + 1];
@@ -298,7 +307,7 @@ function isHealthWarnings(value: unknown): value is HealthWarning[] | undefined 
 
 
 function isCliCommand(command: string | undefined): command is CliCommand {
-  return command === "serve" || command === "ensure" || command === "init" || command === "status" || command === "logs";
+  return command === "serve" || command === "ensure" || command === "init" || command === "status" || command === "logs" || command === "mcp-proxy";
 }
 
 type TokenStatus =
@@ -426,13 +435,30 @@ function writeUsage(stream: Pick<NodeJS.WriteStream, "write">): void {
   writeLine(stream, "       loupe ensure [--port <n>] [--home <path>]");
   writeLine(stream, "       loupe init [--port <n>] [--home <path>]");
   writeLine(stream, "       loupe status [--port <n>] [--home <path>]");
-  writeLine(stream, "       loupe logs [--home <path>]");
+  writeLine(stream, "       loupe mcp-proxy [--url <url>] [--token-path <path>]");
 }
 
 function writeLine(stream: Pick<NodeJS.WriteStream, "write">, line: string): void {
   stream.write(`${line}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint(): boolean {
+  const entrypoint = process.argv[1];
+  if (entrypoint === undefined) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  if (modulePath === entrypoint) return true;
+
+  const resolvedModulePath = resolve(modulePath);
+  const resolvedEntrypoint = resolve(entrypoint);
+  if (resolvedModulePath === resolvedEntrypoint) return true;
+
+  try {
+    return realpathSync.native(resolvedModulePath) === realpathSync.native(resolvedEntrypoint);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
   process.exitCode = await runCli();
 }

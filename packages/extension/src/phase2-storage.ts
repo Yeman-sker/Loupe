@@ -13,7 +13,7 @@ import {
   type Locator,
   type ProjectScopeWithUrl,
   type ResolveResult,
-} from "@loupe/shared";
+} from "@loupe-server/shared";
 
 export type AnnotationDraft = {
   id: string;

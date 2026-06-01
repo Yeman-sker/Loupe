@@ -1,24 +1,27 @@
 {
-  "name": "@loupe/server",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@loupe-server/server",
+  "version": "0.1.2",
   "type": "module",
   "bin": {
-    "loupe-server": "./src/cli.ts",
-    "loupe": "./src/cli.ts"
+    "loupe-server": "./dist/cli.js",
+    "loupe": "./dist/cli.js"
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "check": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@loupe/shared": "workspace:*"
+    "@loupe-server/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",

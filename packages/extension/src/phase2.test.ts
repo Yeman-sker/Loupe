@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LOUPE_SCHEMA_VERSION, storage_keys, assert_annotation, type AgentMark, type Annotation, type Locator, type ResolveResult } from "@loupe/shared";
+import { LOUPE_SCHEMA_VERSION, storage_keys, assert_annotation, type AgentMark, type Annotation, type Locator, type ResolveResult } from "@loupe-server/shared";
 import {
   copy_markdown,
   create_annotation,
