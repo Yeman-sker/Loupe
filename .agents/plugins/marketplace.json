@@ -8,9 +8,9 @@
       "name": "loupe",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/loupe-dev/loupe.git",
+        "url": "https://github.com/Yeman-sker/Loupe.git",
         "path": "./packages/codex-plugin",
-        "ref": "main"
+        "ref": "master"
       },
       "policy": {
         "installation": "AVAILABLE",

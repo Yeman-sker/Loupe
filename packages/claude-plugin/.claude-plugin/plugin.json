@@ -2,8 +2,10 @@
   "name": "loupe",
   "description": "Read DOM marks placed in the browser as precise frontend tasks.",
   "version": "0.1.0",
+  "author": {
+    "name": "Loupe"
+  },
   "commands": "./commands",
-  "agents": "./agents",
   "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "loupe": {

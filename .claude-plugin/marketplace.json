@@ -11,13 +11,13 @@
       "description": "Read DOM marks placed in the browser as precise frontend tasks.",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/loupe-dev/loupe",
+        "url": "https://github.com/Yeman-sker/Loupe.git",
         "path": "packages/claude-plugin",
-        "ref": "main"
+        "ref": "master"
       },
       "version": "0.1.0",
-      "homepage": "https://github.com/loupe-dev/loupe",
-      "repository": "https://github.com/loupe-dev/loupe",
+      "homepage": "https://github.com/Yeman-sker/Loupe",
+      "repository": "https://github.com/Yeman-sker/Loupe",
       "license": "MIT",
       "keywords": ["loupe", "dom", "mcp", "claude-code"]
     }
