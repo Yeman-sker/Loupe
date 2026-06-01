@@ -3,13 +3,15 @@ import { describe, it } from "node:test";
 import { validateMarketplaceManifest } from "./marketplace.js";
 
 const validManifest = {
-  name: "loupe-plugins",
+  name: "loupe-server",
   owner: {
     name: "Loupe",
   },
+  description: "Claude Code plugins for Loupe DOM marks.",
   plugins: [
     {
       name: "loupe",
+      displayName: "Loupe",
       description: "Read DOM marks placed in the browser as precise frontend tasks.",
       source: {
         source: "git-subdir",
@@ -17,6 +19,11 @@ const validManifest = {
         path: "packages/claude-plugin",
         ref: "main",
       },
+      version: "0.1.0",
+      homepage: "https://github.com/loupe-dev/loupe",
+      repository: "https://github.com/loupe-dev/loupe",
+      license: "MIT",
+      keywords: ["loupe", "dom", "mcp", "claude-code"],
     },
   ],
 };

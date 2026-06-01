@@ -50,6 +50,14 @@ function validatePlugin(plugin: unknown, index: number, errors: string[]): void 
 
   requireString(plugin, "name", `${prefix}.name`, errors);
   requireOptionalString(plugin, "description", `${prefix}.description`, errors);
+  requireOptionalString(plugin, "displayName", `${prefix}.displayName`, errors);
+  requireOptionalString(plugin, "version", `${prefix}.version`, errors);
+  requireOptionalString(plugin, "homepage", `${prefix}.homepage`, errors);
+  requireOptionalString(plugin, "repository", `${prefix}.repository`, errors);
+  requireOptionalString(plugin, "license", `${prefix}.license`, errors);
+  if ("keywords" in plugin && !isStringArray(plugin.keywords)) {
+    errors.push(`${prefix}.keywords must be an array of strings`);
+  }
 
   if (!isRecord(plugin.source)) {
     errors.push(`${prefix}.source must be an object`);
@@ -88,4 +96,8 @@ function requireExactString(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }

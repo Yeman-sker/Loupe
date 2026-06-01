@@ -6,10 +6,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx",
-            "args": ["-y", "@loupe-server/server", "ensure", "--port", "7373"],
+            "command": "npx -y @loupe-server/server ensure --port 7373",
             "timeout": 8,
-            "async": true
+            "async": true,
+            "statusMessage": "Starting Loupe daemon"
           }
         ]
       }

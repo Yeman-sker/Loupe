@@ -1,0 +1,25 @@
+{
+  "name": "loupe",
+  "version": "0.1.0",
+  "description": "Read DOM marks placed in the browser as precise frontend tasks.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Loupe",
+    "shortDescription": "Use browser DOM marks as Codex tasks.",
+    "longDescription": "Loupe connects browser-side DOM marks to Codex through a local daemon, a stdio MCP proxy, and a startup hook that keeps the daemon available.",
+    "developerName": "Loupe",
+    "category": "Productivity",
+    "capabilities": ["MCP", "Hooks", "Skills"],
+    "defaultPrompt": "List my open Loupe DOM marks for this project and help resolve one.",
+    "brandColor": "#2563eb"
+  },
+  "author": {
+    "name": "Loupe"
+  },
+  "homepage": "https://github.com/loupe-dev/loupe",
+  "repository": "https://github.com/loupe-dev/loupe",
+  "license": "MIT",
+  "keywords": ["loupe", "dom", "mcp", "codex"]
+}

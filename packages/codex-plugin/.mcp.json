@@ -1,0 +1,12 @@
+{
+  "loupe": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@loupe-server/server",
+      "mcp-proxy",
+      "--url",
+      "http://127.0.0.1:7373/mcp"
+    ]
+  }
+}
