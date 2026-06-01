@@ -5,19 +5,5 @@
   "author": {
     "name": "Loupe"
   },
-  "commands": "./commands",
-  "mcpServers": {
-    "loupe": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@loupe-server/server",
-        "mcp-proxy",
-        "--url",
-        "http://127.0.0.1:7373/mcp"
-      ],
-      "timeout": 5000
-    }
-  }
+  "commands": "./commands"
 }
