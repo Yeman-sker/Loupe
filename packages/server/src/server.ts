@@ -345,7 +345,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
       writeJson(response, 200, jsonRpcError(id, -32000, result.error.message, result.error));
       return;
     }
-    writeJson(response, 200, { jsonrpc: "2.0", id, result: result.result });
+    writeJson(response, 200, { jsonrpc: "2.0", id, result: mcpToolResult(result.result) });
     return;
   }
 
@@ -392,6 +392,13 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
     return { error: result.error };
   }
   return { error: { code: error_codes.not_found, message: "Tool not found." } };
+}
+
+function mcpToolResult(value: unknown): { content: Array<{ type: "text"; text: string }>; structuredContent: unknown } {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    structuredContent: value,
+  };
 }
 
 async function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL, store: MarkStore): Promise<void> {

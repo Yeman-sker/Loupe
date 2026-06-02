@@ -131,7 +131,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const body = await callListMarks(baseUrl, token, { project_id: "project-123" }, "list-project");
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "list-project");
-    assert.deepEqual(body.result, { project: { project_id: "project-123" }, marks: [] });
+    assert.deepEqual(mcpStructuredContent(body), { project: { project_id: "project-123" }, marks: [] });
   });
 
   it("returns empty marks for authorized route scoped list_marks", async () => {
@@ -143,7 +143,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const body = await callListMarks(baseUrl, token, args, "list-route");
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "list-route");
-    assert.deepEqual(body.result, { project: { project_id: args.workspace_root_hash, ...args }, marks: [] });
+    assert.deepEqual(mcpStructuredContent(body), { project: { project_id: args.workspace_root_hash, ...args }, marks: [] });
   });
 
   it("returns SCOPE_REQUIRED for authorized unscoped REST list marks", async () => {
@@ -224,10 +224,11 @@ describe("Loupe Phase 0 HTTP contract", () => {
 
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "mcp-contract");
-    assert.deepEqual(body.result, expectedAgentMark(annotation));
-    assert.equal(is_agent_mark(body.result), true);
-    assertAgentMarkLowNoise(body.result as AgentMark);
-    assertNoLeakedKeys(body.result, [
+    const mark = mcpStructuredContent(body);
+    assert.deepEqual(mark, expectedAgentMark(annotation));
+    assert.equal(is_agent_mark(mark), true);
+    assertAgentMarkLowNoise(mark as AgentMark);
+    assertNoLeakedKeys(mark, [
       "schema_version",
       "sync",
       "context",
@@ -263,8 +264,8 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const firstList = await callMcpTool(baseUrl, token, "list_marks", { project_id: first.project.project_id }, "mcp-clean-first");
     const secondList = await callMcpTool(baseUrl, token, "list_marks", { project_id: second.project.project_id }, "mcp-clean-second");
 
-    assert.deepEqual(firstList.result, { project: candidateFor(first), marks: [expectedAgentMark(first)] });
-    assert.deepEqual(secondList.result, { project: candidateFor(second), marks: [expectedAgentMark(second)] });
+    assert.deepEqual(mcpStructuredContent(firstList), { project: candidateFor(first), marks: [expectedAgentMark(first)] });
+    assert.deepEqual(mcpStructuredContent(secondList), { project: candidateFor(second), marks: [expectedAgentMark(second)] });
   });
 
   it("supports MCP initialize and initialized notification before tool discovery", async () => {
@@ -324,8 +325,22 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "mcp-p95-list");
     assert.ok(elapsedMs < 2000, `Expected Save-to-Agent readable first stage under 2000ms, got ${elapsedMs}ms`);
-    assert.deepEqual(body.result, { project: candidateFor(annotation), marks: [expectedAgentMark(annotation)] });
-    assertAgentMarkLowNoise((body.result as { marks: AgentMark[] }).marks[0]!);
+    const listed = mcpStructuredContent(body) as { marks: AgentMark[] };
+    assert.deepEqual(listed, { project: candidateFor(annotation), marks: [expectedAgentMark(annotation)] });
+    assertAgentMarkLowNoise(listed.marks[0]!);
+  });
+
+  it("returns MCP tool result content for list_marks", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-envelope-1", project_id: "mcp-project-envelope", session_id: "mcp-session-envelope" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+    const body = await callMcpTool(baseUrl, token, "list_marks", { project_id: annotation.project.project_id }, "mcp-envelope-list");
+
+    assert.equal(body.jsonrpc, "2.0");
+    assert.equal(body.id, "mcp-envelope-list");
+    assert.ok(isRecord(body.result));
+    assert.ok(Array.isArray(body.result.content));
+    assert.deepEqual(body.result.content[0], { type: "text", text: JSON.stringify({ project: candidateFor(annotation), marks: [expectedAgentMark(annotation)] }, null, 2) });
+    assert.deepEqual(body.result.structuredContent, { project: candidateFor(annotation), marks: [expectedAgentMark(annotation)] });
   });
 
   it("gets a posted Annotation as a low-noise AgentMark through MCP get_mark", async () => {
@@ -336,8 +351,9 @@ describe("Loupe Phase 0 HTTP contract", () => {
 
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "mcp-get");
-    assert.deepEqual(body.result, expectedAgentMark(annotation));
-    assertAgentMarkLowNoise(body.result as AgentMark);
+    const mark = mcpStructuredContent(body);
+    assert.deepEqual(mark, expectedAgentMark(annotation));
+    assertAgentMarkLowNoise(mark as AgentMark);
   });
 
   it("resolves through MCP only with project assertion and read-back reports resolved", async () => {
@@ -352,16 +368,17 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const resolved = await callMcpTool(baseUrl, token, "resolve_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-resolve");
     assert.equal(resolved.jsonrpc, "2.0");
     assert.equal(resolved.id, "mcp-resolve");
-    assert.deepEqual(resolved.result, { ok: true, task_status: "resolved" });
+    assert.deepEqual(mcpStructuredContent(resolved), { ok: true, task_status: "resolved" });
 
     const readBack = await callMcpTool(baseUrl, token, "get_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-resolve-read");
     assert.equal(readBack.jsonrpc, "2.0");
     assert.equal(readBack.id, "mcp-resolve-read");
-    assert.ok(isRecord(readBack.result));
-    assert.ok(isRecord(readBack.result.lifecycle));
-    assert.equal(readBack.result.lifecycle.task_status, "resolved");
-    assert.equal(typeof readBack.result.lifecycle.updated_at, "string");
-    assertAgentMarkLowNoise(readBack.result as AgentMark);
+    const resolvedMark = mcpStructuredContent(readBack);
+    assert.ok(isRecord(resolvedMark));
+    assert.ok(isRecord(resolvedMark.lifecycle));
+    assert.equal(resolvedMark.lifecycle.task_status, "resolved");
+    assert.equal(typeof resolvedMark.lifecycle.updated_at, "string");
+    assertAgentMarkLowNoise(resolvedMark as AgentMark);
   });
 
   it("deletes through MCP with project assertion and removes the mark from project lists", async () => {
@@ -376,14 +393,15 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const deleted = await callMcpTool(baseUrl, token, "delete_mark", { id: annotation.id, project_id: annotation.project.project_id }, "mcp-delete");
     assert.equal(deleted.jsonrpc, "2.0");
     assert.equal(deleted.id, "mcp-delete");
-    assert.ok(isRecord(deleted.result));
-    assert.equal(deleted.result.ok, true);
-    assert.equal(typeof deleted.result.deleted_at, "string");
+    const deletedResult = mcpStructuredContent(deleted);
+    assert.ok(isRecord(deletedResult));
+    assert.equal(deletedResult.ok, true);
+    assert.equal(typeof deletedResult.deleted_at, "string");
 
     const list = await callMcpTool(baseUrl, token, "list_marks", { project_id: annotation.project.project_id }, "mcp-delete-list");
     assert.equal(list.jsonrpc, "2.0");
     assert.equal(list.id, "mcp-delete-list");
-    assert.deepEqual(list.result, { project: { project_id: annotation.project.project_id }, marks: [] });
+    assert.deepEqual(mcpStructuredContent(list), { project: { project_id: annotation.project.project_id }, marks: [] });
   });
 
   it("returns MULTI_PROJECT candidates and no mixed marks for MCP same-origin list_marks", async () => {
@@ -1200,6 +1218,14 @@ async function callMcpTool(
   });
   assert.equal(response.status, 200);
   return (await response.json()) as JsonRpcResponse;
+}
+
+function mcpStructuredContent(response: JsonRpcResponse): unknown {
+  assert.ok(isRecord(response.result));
+  assert.ok(Array.isArray(response.result.content));
+  assert.equal(response.result.content[0]?.type, "text");
+  assert.equal(response.result.content[0]?.text, JSON.stringify(response.result.structuredContent, null, 2));
+  return response.result.structuredContent;
 }
 
 async function callListMarks(
