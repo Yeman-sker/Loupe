@@ -613,6 +613,32 @@
     await chrome.storage.local.set({ [sessionMarksKey(projectId, sessionId)]: marks });
   }
 
+  async function removeStoredMark(marksKey, markId) {
+    const stored = await chrome.storage.local.get(marksKey);
+    const marks = Array.isArray(stored?.[marksKey]) ? stored[marksKey] : [];
+    await chrome.storage.local.set({ [marksKey]: marks.filter((item) => item.id !== markId) });
+  }
+
+  async function syncDeletedMark(mark) {
+    const daemon = await readDaemonConfig();
+    if (!daemon) return false;
+    const marksKey = sessionMarksKey(mark.project.project_id, mark.project.session_id);
+    await replaceStoredMark(marksKey, { ...mark, sync: { status: "delete_pending", retry_count: mark.sync?.retry_count || 0 } });
+    try {
+      const response = await fetch(markDeleteUrl(daemon.base_url, mark), {
+        method: "DELETE",
+        headers: { authorization: `${LOUPE_AUTH_SCHEME} ${daemon.token}` },
+      });
+      if (!response.ok) throw new Error(`DELETE /v1/marks/${mark.id} failed with ${response.status}`);
+      await removeStoredMark(marksKey, mark.id);
+      return true;
+    } catch (error) {
+      const current = (await readStoredMark(marksKey, mark.id)) || mark;
+      await replaceStoredMark(marksKey, { ...current, sync: { status: "delete_pending", retry_count: (current.sync?.retry_count || 0) + 1, last_error: errorMessage(error) } });
+      return false;
+    }
+  }
+
   async function syncSavedMark(mark) {
     const daemon = await readDaemonConfig();
     if (!daemon) return;
@@ -646,7 +672,8 @@
     const index = marks.findIndex((item) => item.id === mark.id);
     const next = index === -1 ? [...marks, mark] : [...marks.slice(0, index), mark, ...marks.slice(index + 1)];
     const localIndex = state.marks.findIndex((item) => item.id === mark.id);
-    if (localIndex === -1) state.marks.push(mark);
+    if (mark.lifecycle?.deleted_at) state.marks = state.marks.filter((item) => item.id !== mark.id);
+    else if (localIndex === -1) state.marks.push(mark);
     else state.marks = [...state.marks.slice(0, localIndex), mark, ...state.marks.slice(localIndex + 1)];
     await chrome.storage.local.set({ [marksKey]: next });
   }
@@ -687,6 +714,22 @@
     const baseUrl = typeof candidate.base_url === "string" ? candidate.base_url : typeof candidate.daemon_base_url === "string" ? candidate.daemon_base_url : "";
     const token = typeof candidate.token === "string" ? candidate.token : typeof candidate.daemon_token === "string" ? candidate.daemon_token : "";
     return baseUrl && token ? { base_url: baseUrl, token } : null;
+  }
+
+  function markDeleteUrl(baseUrl, mark) {
+    const url = new URL(joinDaemonUrl(baseUrl, `/v1/marks/${encodeURIComponent(mark.id)}`));
+    appendParam(url, "project_id", mark.project.project_id);
+    appendParam(url, "workspace_root_hash", mark.project.workspace_root_hash);
+    appendParam(url, "branch", mark.project.branch);
+    appendParam(url, "origin", mark.project.origin);
+    appendParam(url, "url", mark.project.url);
+    appendParam(url, "route_key", mark.project.route_key);
+    appendParam(url, "session_id", mark.project.session_id);
+    return url.href;
+  }
+
+  function appendParam(url, key, value) {
+    if (value !== undefined) url.searchParams.set(key, value);
   }
 
   function joinDaemonUrl(baseUrl, path) {
@@ -835,13 +878,14 @@
     await writeTombstone(mark);
     state.marks = state.marks.filter((item) => item.id !== mark.id);
     await persistSessionProject(project.project_id, project.session_id);
+    const deletedRemotely = await syncDeletedMark(mark);
     closeFloating();
     renderPins();
     if (reopenPanel) {
       state.dialogFocusReturn = focusReturn;
       openPanel(true);
     }
-    renderShell("Deleted mark and wrote tombstone.");
+    renderShell(deletedRemotely ? "Deleted mark." : "Deleted mark locally; daemon delete pending.");
   }
 
   async function openPanel(replace = false) {

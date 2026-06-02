@@ -233,6 +233,37 @@ describe("background service worker wake", () => {
     assert.equal(((store[key] as Array<{ sync: { status: string }; intent: { comment: string } }>)[0]?.intent.comment), "daemon");
   });
 
+  it("removes synced local marks omitted by daemon reconciliation after agent delete", async () => {
+    const key = "loupe:v1:project:project-1:session:session-1:marks";
+    const tombstones_key = "loupe:v1:project:project-1:tombstones";
+    const local_mark = {
+      id: "mark-deleted",
+      project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
+      target: { resolution: {} },
+      intent: { comment: "deleted by agent", kind: "copy" },
+      lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", task_status: "open" },
+      sync: { status: "synced", retry_count: 0 },
+    };
+    const store: Record<string, unknown> = { [key]: [local_mark] };
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake", scope: local_mark.project, daemon: { base_url: "http://127.0.0.1:7373", token: "secret-token" } },
+      "2026-01-01T00:00:01.000Z",
+      async () => Response.json({ marks: [] }),
+    );
+
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 0, stored: 0 });
+    assert.deepEqual(store[key], []);
+    assert.deepEqual(store[tombstones_key], ["mark-deleted"]);
+  });
+
   it("preserves newer unsynced local marks during daemon reconciliation", async () => {
     const key = "loupe:v1:project:project-1:session:session-1:marks";
     const store: Record<string, unknown> = {

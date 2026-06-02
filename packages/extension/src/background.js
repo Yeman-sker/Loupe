@@ -70,7 +70,11 @@ async function handleServiceWorkerWake(message) {
   const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
   const stored = await chrome.storage.local.get(marksKey);
   const localMarks = readAnnotationArray(stored?.[marksKey]);
-  const retryable = localMarks.filter((mark) => isScopeMark(mark, scope) && (mark.sync?.status === "local_only" || mark.sync?.status === "failed"));
+  const deletePending = localMarks.filter((mark) => isScopeMark(mark, scope) && mark.sync?.status === "delete_pending");
+  for (const mark of deletePending) await retryDeleteMark(marksKey, mark, daemon);
+  const afterDeletes = readAnnotationArray((await chrome.storage.local.get(marksKey))?.[marksKey]);
+  const retryable = afterDeletes.filter((mark) => isScopeMark(mark, scope) && !mark.lifecycle?.deleted_at && (mark.sync?.status === "local_only" || mark.sync?.status === "failed"));
+  const retriedIds = retryable.map((mark) => mark.id);
   const retryResults = [];
   for (const mark of retryable) retryResults.push(await retryLocalMark(marksKey, mark, daemon, now));
 
@@ -79,7 +83,7 @@ async function handleServiceWorkerWake(message) {
     if (!response.ok) throw new Error(`GET /v1/marks failed with ${response.status}`);
     const payload = await response.json();
     const daemonMarks = Array.isArray(payload?.marks) ? payload.marks : [];
-    const merged = await reconcileDaemonMarks(marksKey, scope, daemonMarks);
+    const merged = await reconcileDaemonMarks(marksKey, scope, daemonMarks, retriedIds);
     return { ok: true, reconciled: true, retried: retryResults.length, stored: merged.length };
   } catch (error) {
     return { ok: true, reconciled: false, retried: retryResults.length, stored: readAnnotationArray((await chrome.storage.local.get(marksKey))?.[marksKey]).length, error: errorMessage(error) };
@@ -139,19 +143,51 @@ async function retryLocalMark(marksKey, mark, daemon, now) {
   }
 }
 
-async function reconcileDaemonMarks(marksKey, scope, daemonMarks) {
+async function retryDeleteMark(marksKey, mark, daemon) {
+  try {
+    const response = await fetch(markDeleteUrl(daemon.base_url, mark), { method: "DELETE", headers: authorizedHeaders(daemon.token) });
+    if (!response.ok) throw new Error(`DELETE /v1/marks/${mark.id} failed with ${response.status}`);
+    const current = (await readStoredMark(marksKey, mark.id)) || mark;
+    await deleteStoredMark(marksKey, current);
+  } catch (error) {
+    const current = (await readStoredMark(marksKey, mark.id)) || mark;
+    await replaceStoredMark(marksKey, { ...current, sync: { status: "delete_pending", retry_count: (current.sync?.retry_count || 0) + 1, last_error: errorMessage(error) } });
+  }
+}
+
+async function reconcileDaemonMarks(marksKey, scope, daemonMarks, preserveMissingIds = []) {
   const stored = await chrome.storage.local.get(marksKey);
   const localMarks = readAnnotationArray(stored?.[marksKey]);
-  const byId = new Map(localMarks.map((mark) => [mark.id, mark]));
-  for (const daemonMark of daemonMarks) {
-    if (!isDaemonMarkForScope(daemonMark, scope)) continue;
-    const local = byId.get(daemonMark.id);
-    if (local && shouldPreserveUnsyncedLocal(local, daemonMark)) continue;
+  const preservedMissingIds = new Set(preserveMissingIds);
+  const tombstonesKey = projectTombstonesKey(scope.project_id);
+  const tombstones = readStringArray((await chrome.storage.local.get(tombstonesKey))?.[tombstonesKey]);
+  const tombstoneIds = new Set(tombstones);
+  const scopedDaemonMarks = daemonMarks.filter((mark) => isDaemonMarkForScope(mark, scope) && !tombstoneIds.has(mark.id));
+  const daemonIds = new Set(scopedDaemonMarks.map((mark) => mark.id));
+  const next = [];
+  const tombstonedIds = [];
+  for (const localMark of localMarks) {
+    if (!isScopeMark(localMark, scope)) {
+      next.push(localMark);
+      continue;
+    }
+    if (!daemonIds.has(localMark.id)) {
+      if (preservedMissingIds.has(localMark.id) || localMark.sync?.status === "local_only" || localMark.sync?.status === "failed") next.push(localMark);
+      else if (localMark.sync?.status === "synced" || localMark.sync?.status === "delete_pending") tombstonedIds.push(localMark.id);
+    }
+  }
+  const byId = new Map(next.map((mark) => [mark.id, mark]));
+  for (const daemonMark of scopedDaemonMarks) {
+    const local = byId.get(daemonMark.id) || localMarks.find((mark) => mark.id === daemonMark.id);
+    if (local && shouldPreserveUnsyncedLocal(local, daemonMark)) {
+      byId.set(local.id, local);
+      continue;
+    }
     byId.set(daemonMark.id, local ? reconcileLocalMark(local, daemonMark) : annotationFromDaemonMark(daemonMark));
   }
-  const next = Array.from(byId.values());
-  await chrome.storage.local.set({ [marksKey]: next });
-  return next;
+  const reconciled = Array.from(byId.values());
+  await chrome.storage.local.set({ [marksKey]: reconciled, [tombstonesKey]: upsertTombstones(tombstones, tombstonedIds) });
+  return reconciled;
 }
 
 function annotationFromDaemonMark(daemonMark) {
@@ -193,6 +229,14 @@ async function replaceStoredMark(marksKey, mark) {
   await chrome.storage.local.set({ [marksKey]: next });
 }
 
+async function deleteStoredMark(marksKey, mark) {
+  const stored = await chrome.storage.local.get(marksKey);
+  const marks = readAnnotationArray(stored?.[marksKey]);
+  const tombstonesKey = projectTombstonesKey(mark.project.project_id);
+  const tombstones = readStringArray((await chrome.storage.local.get(tombstonesKey))?.[tombstonesKey]);
+  await chrome.storage.local.set({ [marksKey]: marks.filter((item) => item.id !== mark.id), [tombstonesKey]: upsertTombstones(tombstones, [mark.id]) });
+}
+
 async function readStoredMark(marksKey, markId) {
   const stored = await chrome.storage.local.get(marksKey);
   return readAnnotationArray(stored?.[marksKey]).find((mark) => mark.id === markId);
@@ -210,8 +254,37 @@ function readAnnotationArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function readStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+}
+
+function upsertTombstones(tombstones, markIds) {
+  if (!markIds.length) return [...tombstones];
+  const next = new Set(tombstones);
+  for (const markId of markIds) {
+    if (typeof markId === "string") next.add(markId);
+  }
+  return Array.from(next);
+}
+
+function projectTombstonesKey(projectId) {
+  return `loupe:v1:project:${projectId}:tombstones`;
+}
+
 function sessionMarksKey(projectId, sessionId) {
   return `loupe:v1:project:${projectId}:session:${sessionId}:marks`;
+}
+
+function markDeleteUrl(baseUrl, mark) {
+  const url = new URL(joinDaemonUrl(baseUrl, `/v1/marks/${encodeURIComponent(String(mark.id))}`));
+  appendParam(url, "project_id", mark.project?.project_id);
+  appendParam(url, "workspace_root_hash", mark.project?.workspace_root_hash);
+  appendParam(url, "branch", mark.project?.branch);
+  appendParam(url, "origin", mark.project?.origin);
+  appendParam(url, "url", mark.project?.url);
+  appendParam(url, "route_key", mark.project?.route_key);
+  appendParam(url, "session_id", mark.project?.session_id);
+  return url.href;
 }
 
 function markListUrl(baseUrl, scope) {

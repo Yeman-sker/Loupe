@@ -5,6 +5,7 @@ import {
   copy_markdown,
   create_annotation,
   delete_annotation,
+  delete_annotation_from_daemon,
   deterministic_session_id,
   fetch_and_reconcile_daemon_marks,
   probe_daemon_health,
@@ -12,6 +13,7 @@ import {
   reconcile_on_service_worker_wake,
   reconcile_daemon_marks,
   resolve_annotation,
+  retry_pending_deletes,
   retry_unsynced_annotations,
   session_marks_key,
   sync_annotation_to_daemon,
@@ -155,6 +157,34 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.deepEqual(store.data.get(marks_key), [kept]);
     assert.deepEqual(store.data.get(tombstones_key), ["older", removed.id]);
     assert.equal(store.data.has("loupe:v1:marks"), false);
+  });
+
+  it("sends web deletes directly to daemon with project assertions", async () => {
+    const mark = sample_annotation({ id: "mark-delete-http" });
+    const fetch = fetch_sequence([{ ok: true, body: { ok: true, deleted_at: RESOLVED_AT } }]);
+
+    const result = await delete_annotation_from_daemon({ fetch }, daemon_options(), mark);
+
+    assert.deepEqual(result, { ok: true, deleted_at: RESOLVED_AT });
+    assert.equal(fetch.calls[0]?.init?.method, "DELETE");
+    assert.equal(header_value(fetch.calls[0]?.init?.headers, "authorization"), "Bearer token-123");
+    assert.equal(fetch.calls[0]?.input, "http://127.0.0.1:7373/v1/marks/mark-delete-http?project_id=project-abc&workspace_root_hash=workspace-root-hash&origin=https%3A%2F%2Fapp.example.test&url=https%3A%2F%2Fapp.example.test%2Fdashboard%3Ftab%3Dhome&route_key=%2Fdashboard&session_id=session-def");
+  });
+
+  it("retries delete_pending marks then removes them locally", async () => {
+    const base = sample_annotation({ id: "mark-delete-pending" });
+    const deleted = { ...base, lifecycle: { ...base.lifecycle, deleted_at: NOW }, sync: { status: "delete_pending" as const, retry_count: 1 } };
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const tombstones_key = storage_keys.project_tombstones(PROJECT_ID);
+    const store = new MemoryStore({ [marks_key]: [deleted], [tombstones_key]: [] });
+    const fetch = fetch_sequence([{ ok: true, body: { ok: true, deleted_at: RESOLVED_AT } }]);
+
+    const result = await retry_pending_deletes({ fetch, store, now: () => RESOLVED_AT }, daemon_options(), deleted.project);
+
+    assert.equal(result.attempted, 1);
+    assert.deepEqual(stored_marks(store), []);
+    assert.deepEqual(store.data.get(tombstones_key), [deleted.id]);
+    assert.equal(fetch.calls[0]?.init?.method, "DELETE");
   });
 
   it("copies markdown for open marks in the current session and route by default", () => {
@@ -449,6 +479,19 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.deepEqual(reconstructed.sync, { status: "synced", retry_count: 0 });
     assert.deepEqual(reconstructed.media, daemon_mark.media);
     assert.deepEqual(reconstructed.lifecycle, daemon_mark.lifecycle);
+  });
+
+  it("does not resurrect tombstoned daemon marks after local delete", async () => {
+    const deleted = sample_annotation({ id: "mark-deleted-resolved", comment: "Delete resolved mark" });
+    const daemon_mark = sample_agent_mark({ ...deleted, lifecycle: { ...deleted.lifecycle, task_status: "resolved" } });
+    const marks_key = session_marks_key(PROJECT_ID, SESSION_ID);
+    const tombstones_key = storage_keys.project_tombstones(PROJECT_ID);
+    const store = new MemoryStore({ [marks_key]: [], [tombstones_key]: [deleted.id] });
+
+    await reconcile_daemon_marks(store, deleted.project, [daemon_mark]);
+
+    assert.deepEqual(stored_marks(store), []);
+    assert.deepEqual(store.data.get(tombstones_key), [deleted.id]);
   });
 
   it("appends daemon-only wake marks while preserving newer failed local marks", async () => {

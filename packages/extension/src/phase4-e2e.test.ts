@@ -189,6 +189,11 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.match(function_body(source, "syncSavedMark"), /status: "failed"/);
     assert.match(function_body(source, "syncSavedMark"), /retry_count: \(current\.sync\?\.retry_count \|\| 0\) \+ 1/);
     assert.match(function_body(source, "syncSavedMark"), /last_error: errorMessage\(error\)/);
+    assert.match(function_body(source, "deleteMark"), /const deletedRemotely = await syncDeletedMark\(mark\)/);
+    assert.match(function_body(source, "syncDeletedMark"), /method: "DELETE"/);
+    assert.match(function_body(source, "syncDeletedMark"), /markDeleteUrl\(daemon\.base_url, mark\)/);
+    assert.match(function_body(source, "syncDeletedMark"), /status: "delete_pending"/);
+    assert.match(function_body(source, "markDeleteUrl"), /\/v1\/marks\/\$\{encodeURIComponent\(mark\.id\)\}/);
     assert.match(function_body(source, "createAnnotation"), /candidates_considered: resolved\.candidates_considered/);
     assert.match(function_body(source, "commitMarkResolution"), /candidates_considered: result\.candidates_considered/);
     assert.match(function_body(source, "captureLocator"), /viewport_width: window\.innerWidth/);

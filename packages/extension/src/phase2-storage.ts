@@ -229,6 +229,47 @@ export async function delete_annotation(store: MarkStore, project_id: string, se
   });
 }
 
+export type DeleteAnnotationSyncResult =
+  | { ok: true; deleted_at?: string }
+  | { ok: false; error: string };
+
+export async function delete_annotation_from_daemon(
+  deps: Pick<DaemonSyncDependencies, "fetch">,
+  options: DaemonRequestOptions,
+  mark: Annotation,
+): Promise<DeleteAnnotationSyncResult> {
+  const response = await deps.fetch(mark_delete_url(options.base_url, mark), {
+    method: "DELETE",
+    headers: authorized_headers(options.token),
+  });
+  if (!response.ok) return { ok: false, error: `DELETE /v1/marks/${mark.id} failed with ${response.status}` };
+  const payload = (await response.json()) as { deleted_at?: unknown };
+  return { ok: true, ...(typeof payload.deleted_at === "string" ? { deleted_at: payload.deleted_at } : {}) };
+}
+
+export async function retry_pending_deletes(
+  deps: DaemonSyncDependencies,
+  options: DaemonRequestOptions,
+  scope: ReconcileScope,
+): Promise<RetryUnsyncedResult> {
+  const marks_key = session_marks_key(scope.project_id, scope.session_id);
+  const local_marks = read_annotation_array(await deps.store.get(marks_key));
+  const pending = local_marks.filter((mark) => mark.project.project_id === scope.project_id && mark.project.session_id === scope.session_id && mark.sync.status === "delete_pending");
+  const results: SyncAnnotationResult[] = [];
+  for (const mark of pending) {
+    const result = await delete_annotation_from_daemon(deps, options, mark);
+    if (result.ok) {
+      await delete_annotation(deps.store, mark.project.project_id, mark.project.session_id, mark.id);
+      results.push({ ok: true, mark });
+    } else {
+      const current = (await read_stored_mark(deps.store, marks_key, mark.id)) ?? mark;
+      await replace_stored_mark(deps.store, marks_key, { ...current, sync: { status: "delete_pending", retry_count: current.sync.retry_count + 1, last_error: result.error } });
+      results.push({ ok: false, mark: current, error: result.error });
+    }
+  }
+  return { attempted: pending.length, results };
+}
+
 export async function probe_daemon_health(fetch_impl: DaemonFetch, base_url: string): Promise<HealthPayload | undefined> {
   const response = await fetch_impl(join_daemon_url(base_url, "/health"));
   if (!response.ok) return undefined;
@@ -299,7 +340,8 @@ export async function reconcile_daemon_marks(
   const tombstones_key = storage_keys.project_tombstones(scope.project_id);
   const local_marks = read_annotation_array(await store.get(marks_key));
   const tombstones = read_tombstones(await store.get(tombstones_key));
-  const daemon_by_id = new Map(daemon_marks.map((mark) => [mark.id, mark]));
+  const tombstone_set = new Set(tombstones);
+  const daemon_by_id = new Map(daemon_marks.filter((mark) => !tombstone_set.has(mark.id)).map((mark) => [mark.id, mark]));
   let next_tombstones = tombstones;
   const next_marks: Annotation[] = [];
 
@@ -344,6 +386,7 @@ export async function retry_unsynced_annotations(
     (mark) =>
       mark.project.project_id === scope.project_id &&
       mark.project.session_id === scope.session_id &&
+      !mark.lifecycle.deleted_at &&
       (mark.sync.status === "local_only" || mark.sync.status === "failed"),
   );
   const results: SyncAnnotationResult[] = [];
@@ -356,6 +399,7 @@ export async function reconcile_on_service_worker_wake(
   options: DaemonRequestOptions,
   scope: ProjectScopeWithUrl,
 ): Promise<Annotation[]> {
+  await retry_pending_deletes(deps, options, { project_id: scope.project_id, session_id: scope.session_id });
   await retry_unsynced_annotations(deps, options, { project_id: scope.project_id, session_id: scope.session_id });
   try {
     return await fetch_and_reconcile_daemon_marks(deps, options, scope);
@@ -545,6 +589,18 @@ function sync_synced(sync: Annotation["sync"]): Annotation["sync"] {
   return sync.last_synced_at === undefined
     ? { status: "synced", retry_count: sync.retry_count }
     : { status: "synced", retry_count: sync.retry_count, last_synced_at: sync.last_synced_at };
+}
+
+function mark_delete_url(base_url: string, mark: Annotation): string {
+  const url = new URL(join_daemon_url(base_url, `/v1/marks/${encodeURIComponent(mark.id)}`));
+  append_param(url, "project_id", mark.project.project_id);
+  append_param(url, "workspace_root_hash", mark.project.workspace_root_hash);
+  append_param(url, "branch", mark.project.branch);
+  append_param(url, "origin", mark.project.origin);
+  append_param(url, "url", mark.project.url);
+  append_param(url, "route_key", mark.project.route_key);
+  append_param(url, "session_id", mark.project.session_id);
+  return url.href;
 }
 
 function mark_list_url(base_url: string, scope: ProjectScopeWithUrl): string {
