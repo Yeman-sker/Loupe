@@ -267,6 +267,39 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.deepEqual(secondList.result, { project: candidateFor(second), marks: [expectedAgentMark(second)] });
   });
 
+  it("supports MCP initialize and initialized notification before tool discovery", async () => {
+    const initialized = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "0" } } }),
+    });
+    assert.equal(initialized.status, 200);
+    assert.deepEqual(await initialized.json(), {
+      jsonrpc: "2.0",
+      id: "init",
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: LOUPE_DAEMON_NAME, version: "phase-0-test" },
+      },
+    });
+
+    const notification = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    });
+    assert.equal(notification.status, 204);
+
+    const list = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "tools", method: "tools/list" }),
+    });
+    assert.equal(list.status, 200);
+    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 4);
+  });
+
   it("rejects UUID-like bare-id MCP get, resolve, and delete", async () => {
     const annotation = sampleAnnotation({ id: "123e4567-e89b-12d3-a456-426614174000", project_id: "mcp-project-uuid", session_id: "mcp-session-uuid" });
     await assertOk(await postMark(baseUrl, token, annotation));

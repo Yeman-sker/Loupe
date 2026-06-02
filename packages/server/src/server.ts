@@ -225,7 +225,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "MCP endpoint requires POST." } });
       return;
     }
-    await handleMcp(request, response, await context.store);
+    await handleMcp(request, response, await context.store, context.version);
     return;
   }
 
@@ -294,7 +294,7 @@ async function saveStore(store: MarkStore): Promise<void> {
   await save;
 }
 
-async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore): Promise<void> {
+async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string): Promise<void> {
   let rpc: JsonRpcRequest;
   try {
     rpc = JSON.parse(await readRequestBody(request)) as JsonRpcRequest;
@@ -308,6 +308,25 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
   if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
     await appendDaemonLog(store.home, "ERROR", "mcp invalid request");
     writeJson(response, 200, jsonRpcError(id, -32600, "Invalid Request"));
+    return;
+  }
+
+  if (rpc.method === "initialize") {
+    writeJson(response, 200, {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: LOUPE_DAEMON_NAME, version },
+      },
+    });
+    return;
+  }
+
+  if (rpc.method === "notifications/initialized") {
+    response.writeHead(204, { "content-length": 0 });
+    response.end();
     return;
   }
 
