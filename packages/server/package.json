@@ -1,6 +1,6 @@
 {
   "name": "@loupe-server/server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "bin": {
     "loupe-server": "./dist/cli.js",
@@ -21,7 +21,7 @@
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@loupe-server/shared": "workspace:*"
+    "@loupe-server/shared": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
