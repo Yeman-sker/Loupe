@@ -3,11 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "omp": {
+    "name": "loupe",
+    "description": "Read DOM marks placed in the browser as precise frontend tasks.",
+    "commands": "./commands",
+    "agents": "./agents",
+    "mcpServers": "./.mcp.json",
+    "hooks": "./hooks/hooks.json"
+  },
   "files": [
     "hooks",
     "commands",
     "agents",
-    ".claude-plugin"
+    ".claude-plugin",
+    ".mcp.json"
   ],
   "scripts": {
     "check": "tsc -p tsconfig.json",
