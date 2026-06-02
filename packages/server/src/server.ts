@@ -40,6 +40,8 @@ export type LoupeServerOptions = LoupeHomeOptions & {
   port?: number;
   token?: string;
   version?: string;
+  workspaceRoot?: string;
+  branch?: string;
 };
 
 export type LoupeHttpServer = Server & {
@@ -75,6 +77,8 @@ type RequestContext = {
   token: string;
   version: string;
   home: string;
+  workspaceRoot: string;
+  branch?: string;
   store: Promise<MarkStore>;
 };
 
@@ -115,7 +119,23 @@ export async function canonicalLoupeHome(home: string): Promise<string> {
 }
 
 export async function homeHashForHome(home: string): Promise<string> {
-  return createHash("sha256").update(await canonicalLoupeHome(home), "utf8").digest("base64url");
+  return sha256Base64Url(await canonicalLoupeHome(home));
+}
+
+export async function canonicalWorkspaceRoot(workspaceRoot: string): Promise<string> {
+  return realpath(resolve(workspaceRoot));
+}
+
+export async function workspaceRootHashForRoot(workspaceRoot: string): Promise<string> {
+  return sha256Base64Url(await canonicalWorkspaceRoot(workspaceRoot));
+}
+
+export function projectIdForWorkspaceRootHash(workspaceRootHash: string): string {
+  return `loupe_v1_${workspaceRootHash}`;
+}
+
+function sha256Base64Url(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("base64url");
 }
 
 export async function ensureToken(options: TokenOptions = {}): Promise<string> {
@@ -167,10 +187,13 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
   const token = options.token ?? "";
   const version = options.version ?? DEFAULT_VERSION;
   const home = resolveLoupeHome(options.home);
+  const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const store = loadMarkStore(home);
+  const requestContext: RequestContext = { port, token, version, home, workspaceRoot, store };
+  if (options.branch !== undefined) requestContext.branch = options.branch;
 
   const server = createNodeServer((request, response) => {
-    void handleRequest(request, response, { port, token, version, home, store }).catch((error: unknown) => {
+    void handleRequest(request, response, requestContext).catch((error: unknown) => {
       void handleRequestError(request, response, home, error);
     });
   }) as LoupeHttpServer;
@@ -192,6 +215,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
   if (request.method === "GET" && url.pathname === "/health") {
     const store = await context.store;
+    const workspace_root_hash = await workspaceRootHashForRoot(context.workspaceRoot);
     const payload: HealthPayload & { warnings?: StoreWarning[] } = {
       ok: true,
       name: LOUPE_DAEMON_NAME,
@@ -199,7 +223,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       port: context.port,
       requires_auth: true,
       home_hash: await homeHashForHome(context.home),
+      workspace_root_hash,
+      project_id: projectIdForWorkspaceRootHash(workspace_root_hash),
     };
+    if (context.branch !== undefined) payload.branch = context.branch;
     if (store.warnings.length > 0) {
       payload.warnings = store.warnings;
       for (const warning of store.warnings) await appendDaemonLog(store.home, "WARN", `health warning ${warning.code}${warning.file === undefined ? "" : ` file=${warning.file}`}: ${warning.message}`);
@@ -488,7 +515,7 @@ async function upsertMark(store: MarkStore, annotation: Annotation): Promise<voi
 function listMarks(store: MarkStore, args: Record<string, unknown>): { kind: "ok"; value: ListMarksResponse } | { kind: "error"; error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } } {
   const projects = matchingProjects(store, args);
   if (projects === undefined) return { kind: "error", error: { code: error_codes.scope_required, message: "Project scope is required." } };
-  if (projects.length === 0) return { kind: "ok", value: { project: pickProject(args, stringArg(args, "project_id") ?? stringArg(args, "workspace_root_hash") ?? ""), marks: [] } };
+  if (projects.length === 0) return { kind: "ok", value: { project: emptyScopeProject(args), marks: [] } };
   if (projects.length > 1) {
     return { kind: "error", error: { code: error_codes.multi_project, message: "Project scope matches multiple projects.", candidates: projects.map(candidateForProject) } };
   }
@@ -575,15 +602,14 @@ function findAssertedMark(store: MarkStore, args: Record<string, unknown>, mutat
 }
 
 function hasProjectAssertion(args: Record<string, unknown>): boolean {
-  if (hasNonEmptyString(args, "project_id")) return true;
-  return hasNonEmptyString(args, "url") && hasNonEmptyString(args, "route_key");
+  if (hasNonEmptyString(args, "project_id") || hasNonEmptyString(args, "workspace_root_hash")) return true;
+  return hasNonEmptyString(args, "url") || hasNonEmptyString(args, "origin") || hasNonEmptyString(args, "route_key");
 }
 
 function assertionMatches(mark: Annotation, args: Record<string, unknown>): boolean {
   const projectId = stringArg(args, "project_id");
   if (projectId !== undefined && mark.project.project_id !== projectId) return false;
-  if (projectId === undefined && (mark.project.url !== stringArg(args, "url") || mark.project.route_key !== stringArg(args, "route_key"))) return false;
-  return scopeMatches(mark, args, true);
+  return scopeMatches(mark, args, projectId !== undefined);
 }
 
 async function resolveMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: ResolveMarkResponse } | { kind: "error"; error: { code: string; message: string } }> {
@@ -666,6 +692,14 @@ function toAgentMark(annotation: Annotation): AgentMark {
   }
 
   return mark;
+}
+
+function emptyScopeProject(args: Record<string, unknown>): ProjectScopeCandidate {
+  const projectId = stringArg(args, "project_id");
+  if (projectId !== undefined) return pickProject(args, projectId);
+  const workspaceRootHash = stringArg(args, "workspace_root_hash");
+  if (workspaceRootHash !== undefined) return pickProject(args, projectIdForWorkspaceRootHash(workspaceRootHash));
+  return pickProject(args, "");
 }
 
 function pickProject(args: Record<string, unknown>, fallbackProjectId: string): ProjectScopeCandidate {

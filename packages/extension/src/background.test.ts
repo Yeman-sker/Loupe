@@ -182,7 +182,7 @@ describe("background service worker wake", () => {
     const key = "loupe:v1:project:project-1:session:session-1:marks";
     const local_mark = {
       id: "mark-1",
-      project: { project_id: "project-1", session_id: "session-1" },
+      project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
       target: { resolution: {} },
       intent: { comment: "local", kind: "copy" },
       lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", task_status: "open" },
@@ -200,7 +200,7 @@ describe("background service worker wake", () => {
           set: async (items) => void Object.assign(store, items),
         },
       },
-      { type: "loupe.service_worker.wake", scope: { project_id: "project-1", session_id: "session-1" }, daemon: { base_url: "http://127.0.0.1:7373", token: "secret-token" } },
+      { type: "loupe.service_worker.wake", scope: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" }, daemon: { base_url: "http://127.0.0.1:7373", token: "secret-token" } },
       "2026-01-01T00:00:01.000Z",
       async (url, init) => {
         requests.push({ url: String(url), init });
@@ -209,7 +209,7 @@ describe("background service worker wake", () => {
           marks: [
             {
               id: "mark-1",
-              project: { project_id: "project-1", session_id: "session-1" },
+              project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
               target: { selector: "#mark", locator_status: "resolved", confidence: 1, matched_by: ["daemon"] },
               intent: { comment: "daemon", kind: "copy" },
               lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:02.000Z", task_status: "resolved" },
@@ -224,7 +224,7 @@ describe("background service worker wake", () => {
     assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/marks");
     assert.equal(requests[0]?.init?.method, "POST");
     assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
-    assert.equal(requests[1]?.url, "http://127.0.0.1:7373/v1/marks?project_id=project-1&session_id=session-1");
+    assert.equal(requests[1]?.url, "http://127.0.0.1:7373/v1/marks?project_id=project-1&workspace_root_hash=workspace-root-hash&origin=https%3A%2F%2Fapp.example.test&url=https%3A%2F%2Fapp.example.test%2Fdashboard&route_key=%2Fdashboard&session_id=session-1");
     assert.equal(requests[1]?.init?.method, "GET");
     assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
     assert.equal(JSON.stringify(session_sets).includes("secret-token"), false);
@@ -239,7 +239,7 @@ describe("background service worker wake", () => {
       [key]: [
         {
           id: "mark-1",
-          project: { project_id: "project-1", session_id: "session-1" },
+          project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
           target: { resolution: {} },
           intent: { comment: "newer local", kind: "copy" },
           lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:03.000Z", task_status: "open" },
@@ -256,7 +256,7 @@ describe("background service worker wake", () => {
           set: async (items) => void Object.assign(store, items),
         },
       },
-      { project_id: "project-1", session_id: "session-1", base_url: "http://127.0.0.1:7373", token: "secret-token" },
+      { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1", base_url: "http://127.0.0.1:7373", token: "secret-token" },
       "2026-01-01T00:00:04.000Z",
       async (_url, init) => {
         if (init?.method === "POST") return new Response("daemon unavailable", { status: 503 });
@@ -264,7 +264,7 @@ describe("background service worker wake", () => {
           marks: [
             {
               id: "mark-1",
-              project: { project_id: "project-1", session_id: "session-1" },
+              project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
               target: { selector: "#mark", locator_status: "resolved", confidence: 1 },
               intent: { comment: "older daemon", kind: "copy" },
               lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:02.000Z", task_status: "resolved" },

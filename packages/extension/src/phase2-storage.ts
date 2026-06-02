@@ -111,22 +111,43 @@ export function session_marks_key(project_id: string, session_id: string): strin
 
 export type ProjectScopeUrlInput = {
   url: string;
-  session_id: string;
   title?: string;
+  project_id?: string;
+  workspace_root_hash?: string;
+  branch?: string;
 };
 
 export function project_scope_from_url(input: ProjectScopeUrlInput): ProjectScopeWithUrl {
   const url = new URL(input.url);
+  const origin_hash = fnv1a(url.origin).toString(36);
+  const route_key = route_key_from_url(url);
+  const has_daemon_project = input.project_id !== undefined && input.workspace_root_hash !== undefined;
+  const project_id = input.project_id ?? `local_${origin_hash}`;
   const scope: ProjectScopeWithUrl = {
-    project_id: `local_${fnv1a(url.origin).toString(36)}`,
-    workspace_root_hash: `origin_${fnv1a(url.origin).toString(36)}`,
+    project_id,
+    workspace_root_hash: input.workspace_root_hash ?? `temporary_origin_${origin_hash}`,
+    ...(input.branch === undefined ? {} : { branch: input.branch }),
     origin: url.origin,
-    route_key: `${url.pathname || "/"}${url.search}`,
-    session_id: input.session_id,
+    route_key,
+    session_id: has_daemon_project ? deterministic_session_id(project_id, input.branch, route_key) : transient_session_id(url.origin, route_key),
     url: url.href,
   };
   if (input.title !== undefined) scope.title = input.title;
   return scope;
+}
+
+export function deterministic_session_id(project_id: string, branch: string | undefined, route_key: string): string {
+  return `session_${fnv1a(`${project_id}\n${branch ?? ""}\n${route_key}`).toString(36)}`;
+}
+
+function transient_session_id(origin: string, route_key: string): string {
+  return `temporary_${fnv1a(`${origin}\n${route_key}`).toString(36)}`;
+}
+
+function route_key_from_url(url: URL): string {
+  const params = [...url.searchParams.entries()].sort(([left], [right]) => left.localeCompare(right));
+  const search = new URLSearchParams(params).toString();
+  return `${url.pathname || "/"}${search.length === 0 ? "" : `?${search}`}`;
 }
 
 function fnv1a(text: string): number {

@@ -300,6 +300,9 @@ function isLoupeHealth(payload: unknown): payload is LoupeHealthPayload {
     typeof (payload as Record<string, unknown>).port === "number" &&
     (payload as Record<string, unknown>).requires_auth === true &&
     ((payload as Record<string, unknown>).home_hash === undefined || typeof (payload as Record<string, unknown>).home_hash === "string") &&
+    ((payload as Record<string, unknown>).workspace_root_hash === undefined || typeof (payload as Record<string, unknown>).workspace_root_hash === "string") &&
+    ((payload as Record<string, unknown>).project_id === undefined || typeof (payload as Record<string, unknown>).project_id === "string") &&
+    ((payload as Record<string, unknown>).branch === undefined || typeof (payload as Record<string, unknown>).branch === "string") &&
     isHealthWarnings((payload as Record<string, unknown>).warnings)
   );
 }

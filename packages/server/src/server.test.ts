@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe-server/shared";
 import { ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
 import { forwardJsonRpcMessage, parseProxyArgs } from "./mcp-proxy.js";
-import { createServer, ensureToken, homeHashForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
+import { createServer, ensureToken, homeHashForHome, projectIdForWorkspaceRootHash, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, workspaceRootHashForRoot, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
 const originCases: ReadonlyArray<{ name: string; origin?: string }> = [
   { name: "absent Origin" },
@@ -63,6 +63,8 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.requires_auth, true);
     assert.equal(typeof body.port, "number");
     assert.equal(body.home_hash, await homeHashForHome(home));
+    assert.equal(body.workspace_root_hash, await workspaceRootHashForRoot(process.cwd()));
+    assert.equal(body.project_id, projectIdForWorkspaceRootHash(body.workspace_root_hash));
     assert.equal(body.home, undefined);
     assert.equal(body.token, undefined);
   });
@@ -143,7 +145,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     const body = await callListMarks(baseUrl, token, args, "list-route");
     assert.equal(body.jsonrpc, "2.0");
     assert.equal(body.id, "list-route");
-    assert.deepEqual(mcpStructuredContent(body), { project: { project_id: args.workspace_root_hash, ...args }, marks: [] });
+    assert.deepEqual(mcpStructuredContent(body), { project: { project_id: projectIdForWorkspaceRootHash(args.workspace_root_hash), ...args }, marks: [] });
   });
 
   it("returns SCOPE_REQUIRED for authorized unscoped REST list marks", async () => {
@@ -172,7 +174,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       project: {
-        project_id: "root-hash-123",
+        project_id: projectIdForWorkspaceRootHash("root-hash-123"),
         workspace_root_hash: "root-hash-123",
         url: "https://example.test/dashboard",
         route_key: "/dashboard",
@@ -422,6 +424,22 @@ describe("Loupe Phase 0 HTTP contract", () => {
       candidates: [candidateFor(first), candidateFor(second)],
     });
     assert.equal(body.result, undefined);
+  });
+
+  it("accepts workspace_root_hash as project assertion for MCP get, resolve, and delete", async () => {
+    const annotation = sampleAnnotation({ id: "mcp-workspace-assertion", project_id: "mcp-workspace-project", session_id: "mcp-workspace-session", workspace_root_hash: "workspace-assertion-root" });
+    await assertOk(await postMark(baseUrl, token, annotation));
+
+    const read = await callMcpTool(baseUrl, token, "get_mark", { id: annotation.id, workspace_root_hash: annotation.project.workspace_root_hash }, "mcp-workspace-get");
+    assert.deepEqual(mcpStructuredContent(read), expectedAgentMark(annotation));
+
+    const resolved = await callMcpTool(baseUrl, token, "resolve_mark", { id: annotation.id, workspace_root_hash: annotation.project.workspace_root_hash }, "mcp-workspace-resolve");
+    assert.deepEqual(mcpStructuredContent(resolved), { ok: true, task_status: "resolved" });
+
+    const deleted = await callMcpTool(baseUrl, token, "delete_mark", { id: annotation.id, workspace_root_hash: annotation.project.workspace_root_hash }, "mcp-workspace-delete");
+    const deletedResult = mcpStructuredContent(deleted);
+    assert.ok(isRecord(deletedResult));
+    assert.equal(deletedResult.ok, true);
   });
 
   it("requires and accepts project assertion for REST mark reads", async () => {
@@ -1064,13 +1082,13 @@ async function assertOk(response: Response): Promise<void> {
   if (response.status !== 200) assert.fail(`Expected 200 response, got ${response.status}: ${await response.text()}`);
 }
 
-function sampleAnnotation(overrides: { id: string; project_id: string; session_id: string; route_key?: string; url?: string; origin?: string; branch?: string } = { id: "annotation-1", project_id: "project-abc", session_id: "session-def" }): Annotation {
+function sampleAnnotation(overrides: { id: string; project_id: string; session_id: string; workspace_root_hash?: string; route_key?: string; url?: string; origin?: string; branch?: string } = { id: "annotation-1", project_id: "project-abc", session_id: "session-def" }): Annotation {
   const locator = sampleLocator();
   const routeKey = overrides.route_key ?? "/page";
   const url = overrides.url ?? `https://example.test${routeKey}`;
   const project: Annotation["project"] = {
     project_id: overrides.project_id,
-    workspace_root_hash: "root-hash",
+    workspace_root_hash: overrides.workspace_root_hash ?? "root-hash",
     origin: overrides.origin ?? "https://example.test",
     url,
     route_key: routeKey,

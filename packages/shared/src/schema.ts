@@ -71,17 +71,27 @@ export type ProjectIdScopeInput = {
   session_id?: string;
 };
 
-export type ExplicitRouteScopeInput = {
+export type WorkspaceRootScopeInput = {
   project_id?: never;
   workspace_root_hash: string;
-  url: string;
-  route_key: string;
   branch?: string;
   origin?: string;
+  url?: string;
+  route_key?: string;
   session_id?: string;
 };
 
-export type ProjectScopeInput = ProjectIdScopeInput | ExplicitRouteScopeInput;
+export type RouteScopeInput = {
+  project_id?: never;
+  workspace_root_hash?: never;
+  url?: string;
+  origin?: string;
+  route_key?: string;
+  branch?: string;
+  session_id?: string;
+};
+
+export type ProjectScopeInput = ProjectIdScopeInput | WorkspaceRootScopeInput | RouteScopeInput;
 
 export type SelectorStrategy =
   | "shadow_path"
@@ -1401,6 +1411,9 @@ export type HealthPayload = {
   port: number;
   requires_auth: true;
   home_hash?: string;
+  workspace_root_hash?: string;
+  project_id?: string;
+  branch?: string;
 };
 
 export type ServerStatusFile = {

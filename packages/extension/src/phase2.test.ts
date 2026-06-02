@@ -5,6 +5,7 @@ import {
   copy_markdown,
   create_annotation,
   delete_annotation,
+  deterministic_session_id,
   fetch_and_reconcile_daemon_marks,
   probe_daemon_health,
   project_scope_from_url,
@@ -31,29 +32,46 @@ describe("Phase 2 storage and annotation helpers", () => {
     assert.notEqual(project_a_key, "loupe:v1:marks");
   });
 
-  it("derives project scope from origin and route scope from path plus query", () => {
+  it("uses daemon workspace identity and sorted route query for durable scope", () => {
     const route_a = project_scope_from_url({
-      url: "https://app.example.test/dashboard?tab=home#settings",
-      session_id: SESSION_ID,
+      url: "https://app.example.test/dashboard?tab=home&panel=2#settings",
+      project_id: PROJECT_ID,
+      workspace_root_hash: "workspace-root-hash",
+      branch: "main",
       title: "Dashboard",
     });
     const route_b = project_scope_from_url({
       url: "https://app.example.test/settings?tab=profile",
-      session_id: SESSION_ID,
+      project_id: PROJECT_ID,
+      workspace_root_hash: "workspace-root-hash",
+      branch: "main",
     });
     const query_variant = project_scope_from_url({
-      url: "https://app.example.test/dashboard?tab=a",
-      session_id: SESSION_ID,
+      url: "https://app.example.test/dashboard?panel=2&tab=a",
+      project_id: PROJECT_ID,
+      workspace_root_hash: "workspace-root-hash",
+      branch: "main",
     });
 
-    assert.equal(route_a.project_id, route_b.project_id);
-    assert.equal(route_a.workspace_root_hash, route_b.workspace_root_hash);
+    assert.equal(route_a.project_id, PROJECT_ID);
+    assert.equal(route_a.workspace_root_hash, "workspace-root-hash");
     assert.equal(route_a.origin, "https://app.example.test");
-    assert.equal(route_a.route_key, "/dashboard?tab=home");
-    assert.equal(query_variant.route_key, "/dashboard?tab=a");
+    assert.equal(route_a.route_key, "/dashboard?panel=2&tab=home");
+    assert.equal(query_variant.route_key, "/dashboard?panel=2&tab=a");
     assert.notEqual(route_a.route_key, query_variant.route_key);
-    assert.equal(route_a.url, "https://app.example.test/dashboard?tab=home#settings");
+    assert.equal(route_a.session_id, deterministic_session_id(PROJECT_ID, "main", route_a.route_key));
+    assert.notEqual(route_a.session_id, route_b.session_id);
+    assert.equal(route_a.url, "https://app.example.test/dashboard?tab=home&panel=2#settings");
     assert.equal(route_a.title, "Dashboard");
+  });
+
+  it("marks origin-derived project identity as temporary when daemon identity is unavailable", () => {
+    const route = project_scope_from_url({ url: "https://app.example.test/dashboard?tab=home" });
+
+    assert.match(route.project_id, /^local_/);
+    assert.match(route.workspace_root_hash, /^temporary_origin_/);
+    assert.match(route.session_id, /^temporary_/);
+    assert.equal(route.route_key, "/dashboard?tab=home");
   });
 
   it("creates a PRD-shaped local-only annotation with required defaults", () => {
