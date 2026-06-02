@@ -2,6 +2,7 @@
   const ROOT_ID = "loupe-extension-root";
   const SCHEMA_VERSION = 1;
   const MESSAGE_GET_AUTH = "loupe.origin_auth.get";
+  const MESSAGE_SERVICE_WORKER_WAKE = "loupe.service_worker.wake";
   const LOUPE_AUTH_SCHEME = "Bearer";
   const SETTINGS_KEY = "loupe:v1:settings";
   const DAEMON_CONFIG_KEYS = Object.freeze([SETTINGS_KEY, "loupe:v1:daemon", "loupe:daemon", "daemon"]);
@@ -94,6 +95,8 @@
     recoveryTimeoutTimer: 0,
     recoveryObservedRouteKey: "",
     recoveryObserver: null,
+    lastDaemonRefreshAt: 0,
+    refreshingFromDaemon: false,
   };
 
   const host = document.createElement("div");
@@ -179,8 +182,10 @@
     patchHistoryMethod("pushState");
     patchHistoryMethod("replaceState");
     window.addEventListener("scroll", repositionPins, { passive: true, capture: true });
+    installStorageChangeListener();
     observeDomForRecovery();
     await loadMarks();
+    void refreshFromDaemon("boot");
   }
 
   function renderShell(status = "") {
@@ -490,11 +495,16 @@
       lifecycle: { task_status: "open", created_at: now, updated_at: now },
     };
   }
-
   async function loadMarks() {
     const sessionIds = await projectSessionIds();
     const keys = sessionIds.map((sessionId) => sessionMarksKey(state.project.project_id, sessionId));
     const stored = keys.length ? await chrome.storage.local.get(keys) : {};
+    applyStoredMarks(stored, sessionIds);
+    scheduleMarkRecovery("load");
+    renderShell();
+  }
+
+  function applyStoredMarks(stored, sessionIds) {
     const loaded = [];
     for (const sessionId of sessionIds) {
       const key = sessionMarksKey(state.project.project_id, sessionId);
@@ -505,8 +515,68 @@
       }
     }
     state.marks = loaded;
-    scheduleMarkRecovery("load");
+  }
+
+  function applyStorageMarkChanges(changes) {
+    if (!changes || typeof changes !== "object") return false;
+    const prefix = `loupe:v1:project:${state.project.project_id}:session:`;
+    const suffix = ":marks";
+    let changed = false;
+    const byId = new Map(state.marks.map((mark) => [mark.id, mark]));
+    for (const key in changes) {
+      if (!Object.prototype.hasOwnProperty.call(changes, key)) continue;
+      if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue;
+      const sessionId = key.slice(prefix.length, -suffix.length);
+      if (!sessionId) continue;
+      for (const mark of byId.values()) {
+        if (mark.project?.session_id === sessionId) byId.delete(mark.id);
+      }
+      const nextValue = changes[key]?.newValue;
+      if (Array.isArray(nextValue)) {
+        for (const mark of nextValue) {
+          if (mark && !mark.lifecycle?.deleted_at) byId.set(mark.id, normalizeMarkProject(mark, state.project.project_id, sessionId));
+        }
+      }
+      changed = true;
+    }
+    if (changed) state.marks = Array.from(byId.values());
+    return changed;
+  }
+
+  function refreshRenderedMarks() {
+    renderPins();
+    if (state.panelOpen) {
+      const list = app.querySelector(".panel .marks");
+      if (list) renderPanelList(list);
+    }
     renderShell();
+  }
+
+  function installStorageChangeListener() {
+    const onChanged = chrome.storage?.onChanged;
+    if (!onChanged || typeof onChanged.addListener !== "function") return;
+    onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local" || !applyStorageMarkChanges(changes)) return;
+      scheduleMarkRecovery("storage");
+      refreshRenderedMarks();
+    });
+  }
+
+  async function refreshFromDaemon(reason) {
+    if (state.refreshingFromDaemon) return;
+    const now = Date.now();
+    if (reason !== "boot" && now - state.lastDaemonRefreshAt < 1000) return;
+    const daemon = await readDaemonConfig();
+    if (!daemon) return;
+    state.refreshingFromDaemon = true;
+    state.lastDaemonRefreshAt = now;
+    try {
+      await runtimeMessage({ type: MESSAGE_SERVICE_WORKER_WAKE, scope: state.project, daemon });
+      await loadMarks();
+      refreshRenderedMarks();
+    } finally {
+      state.refreshingFromDaemon = false;
+    }
   }
 
   async function projectSessionIds() {
@@ -774,12 +844,13 @@
     renderShell("Deleted mark and wrote tombstone.");
   }
 
-  function openPanel(replace = false) {
+  async function openPanel(replace = false) {
     const focusReturn = replace ? state.dialogFocusReturn : activeElementDeep();
     if (replace) removeByClass("panel");
     else closeFloating();
     state.panelOpen = true;
     state.dialogFocusReturn = focusReturn;
+    void refreshFromDaemon("panel");
     const panel = document.createElement("section");
     panel.className = "panel";
     panel.setAttribute("role", "dialog");

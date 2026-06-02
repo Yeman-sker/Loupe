@@ -197,6 +197,17 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.session/);
     assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.local/);
     assert.doesNotMatch(source, /sessionStorage\.setItem\([^)]*token|dataset\.[A-Za-z0-9_]*token/i);
+
+    assert.match(source, /const MESSAGE_SERVICE_WORKER_WAKE = "loupe\.service_worker\.wake";/);
+    assert.match(function_body(source, "initializeFullPickerApp"), /installStorageChangeListener\(\)/);
+    assert.match(function_body(source, "initializeFullPickerApp"), /void refreshFromDaemon\("boot"\)/);
+    assert.match(function_body(source, "refreshFromDaemon"), /runtimeMessage\(\{ type: MESSAGE_SERVICE_WORKER_WAKE, scope: state\.project, daemon \}\)/);
+    assert.match(function_body(source, "refreshFromDaemon"), /await loadMarks\(\)/);
+    assert.match(function_body(source, "installStorageChangeListener"), /chrome\.storage\?\.onChanged/);
+    assert.match(function_body(source, "installStorageChangeListener"), /areaName !== "local"/);
+    assert.match(function_body(source, "installStorageChangeListener"), /applyStorageMarkChanges\(changes\)/);
+    assert.match(function_body(source, "applyStorageMarkChanges"), /for \(const key in changes\)/);
+    assert.match(function_body(source, "openPanel"), /void refreshFromDaemon\("panel"\)/);
   });
 
   it("MV3 extension host authorization helper grants only eligible http origins", async () => {
