@@ -273,7 +273,12 @@ export async function retry_pending_deletes(
 export async function probe_daemon_health(fetch_impl: DaemonFetch, base_url: string): Promise<HealthPayload | undefined> {
   const response = await fetch_impl(join_daemon_url(base_url, "/health"));
   if (!response.ok) return undefined;
-  const payload = (await response.json()) as HealthPayload;
+  let payload: HealthPayload;
+  try {
+    payload = (await response.json()) as HealthPayload;
+  } catch {
+    return undefined;
+  }
   return payload.ok === true ? payload : undefined;
 }
 
@@ -394,17 +399,25 @@ export async function retry_unsynced_annotations(
   return { attempted: retryable.length, results };
 }
 
+export type ReconcileWakeResult = {
+  marks: Annotation[];
+  reconciled: boolean;
+  error?: string;
+};
+
 export async function reconcile_on_service_worker_wake(
   deps: DaemonSyncDependencies,
   options: DaemonRequestOptions,
   scope: ProjectScopeWithUrl,
-): Promise<Annotation[]> {
+): Promise<ReconcileWakeResult> {
   await retry_pending_deletes(deps, options, { project_id: scope.project_id, session_id: scope.session_id });
   await retry_unsynced_annotations(deps, options, { project_id: scope.project_id, session_id: scope.session_id });
   try {
-    return await fetch_and_reconcile_daemon_marks(deps, options, scope);
-  } catch {
-    return read_annotation_array(await deps.store.get(session_marks_key(scope.project_id, scope.session_id)));
+    const marks = await fetch_and_reconcile_daemon_marks(deps, options, scope);
+    return { marks, reconciled: true };
+  } catch (error) {
+    const marks = read_annotation_array(await deps.store.get(session_marks_key(scope.project_id, scope.session_id)));
+    return { marks, reconciled: false, error: error_message(error) };
   }
 }
 

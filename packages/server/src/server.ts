@@ -321,6 +321,10 @@ async function loadMarkStore(home: string): Promise<MarkStore> {
       const backup = `${path}.corrupted.${new Date().toISOString().replace(/[:.]/g, "-")}`;
       await copyOrRenameCorruptFile(path, backup);
       warnings.push({ code: "CORRUPT_MARKS_JSON", message: "marks.json was corrupt JSON and was backed up.", file: basename(backup) });
+    } else if (error instanceof TypeError) {
+      const backup = `${path}.invalid-schema.${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      await copyOrRenameCorruptFile(path, backup);
+      warnings.push({ code: "INVALID_MARKS_SCHEMA", message: "marks.json had an invalid schema and was backed up.", file: basename(backup) });
     } else {
       throw error;
     }
@@ -351,7 +355,9 @@ async function saveStore(store: MarkStore): Promise<void> {
     await writeFile(tmpPath, `${JSON.stringify(store.envelope, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(tmpPath, store.path);
   });
-  store.save_chain = save.catch(() => undefined);
+  store.save_chain = save.catch((error: unknown) => {
+    void appendDaemonLog(store.home, "ERROR", `save failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   await save;
 }
 
@@ -809,15 +815,16 @@ async function handleRequestError(request: IncomingMessage, response: ServerResp
 
 export async function appendDaemonLog(home: string, level: "INFO" | "ERROR" | "WARN", message: string, options: { fields?: Record<string, string | undefined>; console?: Pick<NodeJS.WriteStream, "write"> | undefined } = {}): Promise<void> {
   const line = formatDaemonLogLine(level, message, options.fields);
+  let fileLogFailed = false;
   try {
     await mkdir(home, { recursive: true, mode: 0o700 });
     const path = serverLogPathForHome(home);
     await truncateDaemonLogIfNeeded(path);
     await appendFile(path, `${line}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {
-    // Daemon logs are best-effort diagnostics only.
+    fileLogFailed = true;
   }
-  if ((level === "WARN" || level === "ERROR") && options.console !== undefined) options.console.write(`${line}\n`);
+  if (((level === "WARN" || level === "ERROR") || fileLogFailed) && options.console !== undefined) options.console.write(`${line}\n`);
 }
 
 function formatDaemonLogLine(level: "INFO" | "ERROR" | "WARN", message: string, fields: Record<string, string | undefined> = {}): string {

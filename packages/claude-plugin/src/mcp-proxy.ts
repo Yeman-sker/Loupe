@@ -174,9 +174,29 @@ export async function runMcpProxy(args: readonly string[] = process.argv.slice(2
       continue;
     }
 
-    const body = await forwardJsonRpcMessage(url, token, line);
-    if (body !== undefined) {
-      process.stdout.write(body.endsWith("\n") ? body : `${body}\n`);
+    try {
+      const body = await forwardJsonRpcMessage(url, token, line);
+      if (body !== undefined) {
+        process.stdout.write(body.endsWith("\n") ? body : `${body}\n`);
+      }
+    } catch (error) {
+      const id = extractJsonRpcId(line);
+      const errorResponse = JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      });
+      process.stdout.write(`${errorResponse}\n`);
     }
   }
+}
+
+function extractJsonRpcId(line: string): string | number | null {
+  try {
+    const parsed = JSON.parse(line) as { id?: unknown };
+    if (typeof parsed.id === "string" || typeof parsed.id === "number") return parsed.id;
+  } catch {
+    // Not valid JSON; use null as fallback id.
+  }
+  return null;
 }
