@@ -3,7 +3,7 @@ import { appendFile, copyFile, mkdir, open, readFile, realpath, rename, stat, wr
 import { constants } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   assert_annotation,
   assert_storage_envelope,
@@ -237,7 +237,7 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
 }
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse, context: RequestContext): Promise<void> {
-  writeCorsHeaders(response);
+  writeCorsHeaders(request, response);
 
   if (request.method === "OPTIONS") {
     response.writeHead(204, { "content-length": 0 });
@@ -300,7 +300,11 @@ function isProtectedPath(pathname: string): boolean {
 
 function isAuthorized(request: IncomingMessage, token: string): boolean {
   const received = parseBearerToken(request.headers.authorization);
-  return token.length > 0 && received === token;
+  if (token.length === 0 || received === undefined) return false;
+  const expected = Buffer.from(token, "utf8");
+  const actual = Buffer.from(received, "utf8");
+  if (expected.byteLength !== actual.byteLength) return false;
+  return timingSafeEqual(expected, actual);
 }
 
 async function loadMarkStore(home: string): Promise<MarkStore> {
@@ -782,11 +786,26 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function writeCorsHeaders(response: ServerResponse): void {
-  response.setHeader("access-control-allow-origin", "*");
+const ALLOWED_CORS_ORIGINS = new Set(["http://127.0.0.1", "http://localhost"]);
+
+function writeCorsHeaders(request: IncomingMessage, response: ServerResponse): void {
+  const origin = request.headers.origin;
+  if (typeof origin === "string" && isAllowedCorsOrigin(origin)) {
+    response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("vary", "origin");
+  }
   response.setHeader("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
   response.setHeader("access-control-allow-headers", "authorization,content-type");
   response.setHeader("access-control-max-age", "600");
+}
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return ALLOWED_CORS_ORIGINS.has(`${url.protocol}//${url.hostname}`);
+  } catch {
+    return false;
+  }
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {

@@ -195,7 +195,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     });
 
     assert.equal(response.status, 204);
-    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.equal(response.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
     assert.match(response.headers.get("access-control-allow-methods") ?? "", /POST/);
     assert.match(response.headers.get("access-control-allow-headers") ?? "", /authorization/);
   });
