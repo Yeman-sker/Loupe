@@ -1,5 +1,5 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { appendFile, copyFile, mkdir, open, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, open, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -42,6 +42,7 @@ export type LoupeServerOptions = LoupeHomeOptions & {
   version?: string;
   workspaceRoot?: string;
   branch?: string;
+  console?: Pick<NodeJS.WriteStream, "write">;
 };
 
 export type LoupeHttpServer = Server & {
@@ -80,10 +81,13 @@ type RequestContext = {
   workspaceRoot: string;
   branch?: string;
   store: Promise<MarkStore>;
+  console?: Pick<NodeJS.WriteStream, "write">;
 };
 
 const DEFAULT_VERSION = "0.0.0";
 const MAX_BODY_BYTES = 1_048_576;
+const LOG_MAX_BYTES = 1_048_576;
+const LOG_TRUNCATE_TO_BYTES = 524_288;
 
 export function resolveLoupeHome(home?: string): string {
   if (!home || home === "~/.loupe") return resolve(homedir(), ".loupe");
@@ -109,6 +113,35 @@ export function serverStatusPathForHome(home: string): string {
 export function marksPathForHome(home: string): string {
   return join(home, "marks.json");
 }
+export type MarkStoreSummary = {
+  path: string;
+  projects: number;
+  marks: number;
+  open: number;
+  warnings: StoreWarning[];
+};
+
+export async function summarizeMarkStore(home: string): Promise<MarkStoreSummary> {
+  const store = await loadMarkStore(home);
+  const counts = countStoreMarks(store.envelope);
+  return { path: store.path, projects: counts.projects, marks: counts.marks, open: counts.open, warnings: store.warnings };
+}
+
+function countStoreMarks(envelope: StorageEnvelope): { projects: number; marks: number; open: number } {
+  let marks = 0;
+  let open = 0;
+  const projects = Object.values(envelope.projects);
+  for (const project of projects) {
+    for (const session of Object.values(project.sessions)) {
+      for (const mark of session.marks) {
+        marks += 1;
+        if (mark.lifecycle.task_status === "open") open += 1;
+      }
+    }
+  }
+  return { projects: projects.length, marks, open };
+}
+
 
 export function serverLogPathForHome(home: string): string {
   return join(home, "server.log");
@@ -190,11 +223,12 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const store = loadMarkStore(home);
   const requestContext: RequestContext = { port, token, version, home, workspaceRoot, store };
+  if (options.console !== undefined) requestContext.console = options.console;
   if (options.branch !== undefined) requestContext.branch = options.branch;
 
   const server = createNodeServer((request, response) => {
     void handleRequest(request, response, requestContext).catch((error: unknown) => {
-      void handleRequestError(request, response, home, error);
+      void handleRequestError(request, response, home, error, requestContext.console);
     });
   }) as LoupeHttpServer;
 
@@ -229,34 +263,34 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     if (context.branch !== undefined) payload.branch = context.branch;
     if (store.warnings.length > 0) {
       payload.warnings = store.warnings;
-      for (const warning of store.warnings) await appendDaemonLog(store.home, "WARN", `health warning ${warning.code}${warning.file === undefined ? "" : ` file=${warning.file}`}: ${warning.message}`);
+      for (const warning of store.warnings) await appendDaemonLog(store.home, "WARN", `health warning ${warning.code}${warning.file === undefined ? "" : ` file=${warning.file}`}: ${warning.message}`, { console: context.console });
     }
     writeJson(response, 200, payload);
     return;
   }
 
   if (isProtectedPath(url.pathname) && !isAuthorized(request, context.token)) {
-    await appendDaemonLog(context.home, "WARN", `unauthorized ${request.method ?? "UNKNOWN"} ${url.pathname}`);
+    await appendDaemonLog(context.home, "WARN", `unauthorized ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
     writeJson(response, 401, { error: { code: error_codes.unauthorized, message: "Authorization bearer token is required." } });
     return;
   }
 
   if (url.pathname === "/v1/marks" || url.pathname.startsWith("/v1/marks/")) {
-    await handleMarks(request, response, url, await context.store);
+    await handleMarks(request, response, url, await context.store, context.console);
     return;
   }
 
   if (url.pathname === "/mcp") {
     if (request.method !== "POST") {
-      await appendDaemonLog(context.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`);
+      await appendDaemonLog(context.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
       writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "MCP endpoint requires POST." } });
       return;
     }
-    await handleMcp(request, response, await context.store, context.version);
+    await handleMcp(request, response, await context.store, context.version, context.console);
     return;
   }
 
-  await appendDaemonLog(context.home, "WARN", `not found ${request.method ?? "UNKNOWN"} ${url.pathname}`);
+  await appendDaemonLog(context.home, "WARN", `not found ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
   writeJson(response, 404, { error: { code: error_codes.not_found, message: "Not found." } });
 }
 
@@ -321,24 +355,25 @@ async function saveStore(store: MarkStore): Promise<void> {
   await save;
 }
 
-async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string): Promise<void> {
+async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
   let rpc: JsonRpcRequest;
   try {
     rpc = JSON.parse(await readRequestBody(request)) as JsonRpcRequest;
   } catch {
-    await appendDaemonLog(store.home, "ERROR", "mcp parse error");
+    await appendDaemonLog(store.home, "ERROR", "mcp parse error", { console });
     writeJson(response, 400, jsonRpcError(null, -32700, "Parse error"));
     return;
   }
 
   const id = isJsonRpcId(rpc.id) ? rpc.id : null;
   if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
-    await appendDaemonLog(store.home, "ERROR", "mcp invalid request");
+    await appendDaemonLog(store.home, "ERROR", "mcp invalid request", { console });
     writeJson(response, 200, jsonRpcError(id, -32600, "Invalid Request"));
     return;
   }
 
   if (rpc.method === "initialize") {
+    await appendDaemonLog(store.home, "INFO", "mcp initialized");
     writeJson(response, 200, {
       jsonrpc: "2.0",
       id,
@@ -366,9 +401,9 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     const call = isRecord(rpc.params) ? rpc.params : undefined;
     const name = typeof call?.name === "string" ? call.name : undefined;
     const args = isRecord(call?.arguments) ? call.arguments : {};
-    const result = await callMcpTool(store, name, args);
+    const result = await callMcpTool(store, name, args, console);
     if ("error" in result) {
-      await appendDaemonLog(store.home, "ERROR", `mcp tools/call failed ${result.error.code}: ${result.error.message}`);
+      await appendDaemonLog(store.home, "ERROR", `mcp tools/call failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
       writeJson(response, 200, jsonRpcError(id, -32000, result.error.message, result.error));
       return;
     }
@@ -376,7 +411,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     return;
   }
 
-  await appendDaemonLog(store.home, "ERROR", `mcp method not found ${rpc.method}`);
+  await appendDaemonLog(store.home, "ERROR", `mcp method not found ${rpc.method}`, { console });
   writeJson(response, 200, jsonRpcError(id, -32601, "Method not found"));
 }
 
@@ -397,7 +432,7 @@ function mcpTools(): unknown[] {
   ];
 }
 
-async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
+async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>, console?: Pick<NodeJS.WriteStream, "write">): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
   if (name === "list_marks") {
     const result = listMarks(store, args);
     if (result.kind === "ok") return { result: result.value };
@@ -410,12 +445,18 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
   }
   if (name === "resolve_mark") {
     const result = await resolveMark(store, args);
-    if (result.kind === "ok") return { result: result.value };
+    if (result.kind === "ok") {
+      await appendDaemonLog(store.home, "INFO", result.changed ? "mark resolved" : "mark resolve noop", { fields: logFieldsForMark(result.mark) });
+      return { result: result.value };
+    }
     return { error: result.error };
   }
   if (name === "delete_mark") {
     const result = await deleteMark(store, args);
-    if (result.kind === "ok") return { result: result.value };
+    if (result.kind === "ok") {
+      await appendDaemonLog(store.home, "INFO", "mark deleted", { fields: logFieldsForMark(result.mark) });
+      return { result: result.value };
+    }
     return { error: result.error };
   }
   return { error: { code: error_codes.not_found, message: "Tool not found." } };
@@ -428,13 +469,13 @@ function mcpToolResult(value: unknown): { content: Array<{ type: "text"; text: s
   };
 }
 
-async function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL, store: MarkStore): Promise<void> {
+async function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL, store: MarkStore, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
   if (url.pathname === "/v1/marks") {
     if (request.method === "GET") {
       const result = listMarks(store, Object.fromEntries(url.searchParams));
       if (result.kind === "ok") writeJson(response, 200, result.value);
       else {
-        await appendDaemonLog(store.home, "ERROR", `marks list failed ${result.error.code}: ${result.error.message}`);
+        await appendDaemonLog(store.home, "ERROR", `marks list failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(Object.fromEntries(url.searchParams)), console });
         writeJson(response, result.error.code === error_codes.multi_project ? 409 : 400, { error: result.error });
       }
       return;
@@ -445,11 +486,12 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
         body = JSON.parse(await readRequestBody(request)) as unknown;
         assert_annotation(body);
       } catch {
-        await appendDaemonLog(store.home, "ERROR", "marks invalid annotation");
+        await appendDaemonLog(store.home, "ERROR", "marks invalid annotation", { console });
         writeJson(response, 400, { error: { code: error_codes.invalid_request, message: "Expected Annotation wire contract." } });
         return;
       }
-      await upsertMark(store, body);
+      const upsert = await upsertMark(store, body);
+      if (!upsert.ignored) await appendDaemonLog(store.home, "INFO", upsert.created ? "mark created" : "mark updated", { fields: logFieldsForMark(body) });
       writeJson(response, 200, { mark: toAgentMark(body) });
       return;
     }
@@ -462,32 +504,37 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
       const result = findAssertedMark(store, args, "read");
       if (result.kind === "ok") writeJson(response, 200, { mark: toAgentMark(result.mark) });
       else {
-        await appendDaemonLog(store.home, "ERROR", `marks get failed ${result.error.code}: ${result.error.message}`);
+        await appendDaemonLog(store.home, "ERROR", `marks get failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
         writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
       }
       return;
     }
     if (request.method === "POST" && path.action === "resolve") {
       const result = await resolveMark(store, args);
-      if (result.kind === "ok") writeJson(response, 200, result.value);
-      else {
-        await appendDaemonLog(store.home, "ERROR", `marks resolve failed ${result.error.code}: ${result.error.message}`);
+      if (result.kind === "ok") {
+        await appendDaemonLog(store.home, "INFO", result.changed ? "mark resolved" : "mark resolve noop", { fields: logFieldsForMark(result.mark) });
+        writeJson(response, 200, result.value);
+      } else {
+        await appendDaemonLog(store.home, "ERROR", `marks resolve failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
         writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
       }
       return;
     }
     if (request.method === "DELETE" && path.action === undefined) {
       const result = await deleteMark(store, args);
-      if (result.kind === "ok") writeJson(response, 200, result.value);
+      if (result.kind === "ok") {
+        await appendDaemonLog(store.home, "INFO", "mark deleted", { fields: logFieldsForMark(result.mark) });
+        writeJson(response, 200, result.value);
+      }
       else {
-        await appendDaemonLog(store.home, "ERROR", `marks delete failed ${result.error.code}: ${result.error.message}`);
+        await appendDaemonLog(store.home, "ERROR", `marks delete failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
         writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
       }
       return;
     }
   }
 
-  await appendDaemonLog(store.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`);
+  await appendDaemonLog(store.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console });
   writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Unsupported marks operation." } });
 }
 
@@ -500,16 +547,18 @@ function markPath(pathname: string): { id: string; action?: "resolve" } | undefi
   return undefined;
 }
 
-async function upsertMark(store: MarkStore, annotation: Annotation): Promise<void> {
+async function upsertMark(store: MarkStore, annotation: Annotation): Promise<{ created: boolean; ignored: boolean }> {
   const projectId = annotation.project.project_id;
   const sessionId = annotation.project.session_id;
   const project = (store.envelope.projects[projectId] ??= { sessions: {}, tombstones: [] });
-  if (project.tombstones.includes(annotation.id)) return;
+  if (project.tombstones.includes(annotation.id)) return { created: false, ignored: true };
   const session = (project.sessions[sessionId] ??= { marks: [] });
   const index = session.marks.findIndex((mark) => mark.id === annotation.id);
-  if (index === -1) session.marks.push(annotation);
+  const created = index === -1;
+  if (created) session.marks.push(annotation);
   else session.marks[index] = annotation;
   await saveStore(store);
+  return { created, ignored: false };
 }
 
 function listMarks(store: MarkStore, args: Record<string, unknown>): { kind: "ok"; value: ListMarksResponse } | { kind: "error"; error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } } {
@@ -612,18 +661,19 @@ function assertionMatches(mark: Annotation, args: Record<string, unknown>): bool
   return scopeMatches(mark, args, projectId !== undefined);
 }
 
-async function resolveMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: ResolveMarkResponse } | { kind: "error"; error: { code: string; message: string } }> {
+async function resolveMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: ResolveMarkResponse; mark: Annotation; changed: boolean } | { kind: "error"; error: { code: string; message: string } }> {
   const result = findAssertedMark(store, args, "resolve");
   if (result.kind === "error") return result;
+  if (result.mark.lifecycle.task_status === "resolved") return { kind: "ok", value: { ok: true, task_status: "resolved" }, mark: result.mark, changed: false };
   const now = new Date().toISOString();
   result.mark.lifecycle.task_status = "resolved";
   result.mark.lifecycle.updated_at = now;
   result.mark.lifecycle.task_resolved_at = now;
   await saveStore(store);
-  return { kind: "ok", value: { ok: true, task_status: "resolved" } };
+  return { kind: "ok", value: { ok: true, task_status: "resolved" }, mark: result.mark, changed: true };
 }
 
-async function deleteMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: DeleteMarkResponse } | { kind: "error"; error: { code: string; message: string } }> {
+async function deleteMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: DeleteMarkResponse; mark: Annotation } | { kind: "error"; error: { code: string; message: string } }> {
   const result = findAssertedMark(store, args, "delete");
   if (result.kind === "error") return result;
   const deletedAt = new Date().toISOString();
@@ -636,7 +686,7 @@ async function deleteMark(store: MarkStore, args: Record<string, unknown>): Prom
   }
   if (!result.project.tombstones.includes(result.mark.id)) result.project.tombstones.push(result.mark.id);
   await saveStore(store);
-  return { kind: "ok", value: { ok: true, deleted_at: deletedAt } };
+  return { kind: "ok", value: { ok: true, deleted_at: deletedAt }, mark: result.mark };
 }
 
 function toAgentMark(annotation: Annotation): AgentMark {
@@ -748,8 +798,8 @@ function writeJson(response: ServerResponse, statusCode: number, payload: unknow
   response.end(body);
 }
 
-async function handleRequestError(request: IncomingMessage, response: ServerResponse, home: string, error: unknown): Promise<void> {
-  await appendDaemonLog(home, "ERROR", `request failed ${request.method ?? "UNKNOWN"} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}: ${error instanceof Error ? error.name : "non-error throw"}`);
+async function handleRequestError(request: IncomingMessage, response: ServerResponse, home: string, error: unknown, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
+  await appendDaemonLog(home, "ERROR", `request failed ${request.method ?? "UNKNOWN"} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}: ${error instanceof Error ? error.name : "non-error throw"}`, { console });
   if (response.headersSent) {
     response.destroy();
     return;
@@ -757,13 +807,47 @@ async function handleRequestError(request: IncomingMessage, response: ServerResp
   writeJson(response, 500, { error: { code: error_codes.internal_error, message: "Internal server error." } });
 }
 
-async function appendDaemonLog(home: string, level: "ERROR" | "WARN", message: string): Promise<void> {
+export async function appendDaemonLog(home: string, level: "INFO" | "ERROR" | "WARN", message: string, options: { fields?: Record<string, string | undefined>; console?: Pick<NodeJS.WriteStream, "write"> | undefined } = {}): Promise<void> {
+  const line = formatDaemonLogLine(level, message, options.fields);
   try {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    await appendFile(serverLogPathForHome(home), `${new Date().toISOString()} ${level} ${message}\n`, { encoding: "utf8", mode: 0o600 });
+    const path = serverLogPathForHome(home);
+    await truncateDaemonLogIfNeeded(path);
+    await appendFile(path, `${line}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {
     // Daemon logs are best-effort diagnostics only.
   }
+  if ((level === "WARN" || level === "ERROR") && options.console !== undefined) options.console.write(`${line}\n`);
+}
+
+function formatDaemonLogLine(level: "INFO" | "ERROR" | "WARN", message: string, fields: Record<string, string | undefined> = {}): string {
+  const parts = [new Date().toISOString(), level];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value.length > 0) parts.push(`${key}=${value}`);
+  }
+  parts.push(message);
+  return parts.join(" ");
+}
+
+async function truncateDaemonLogIfNeeded(path: string): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(path)).size;
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (size <= LOG_MAX_BYTES) return;
+  const raw = await readFile(path);
+  await writeFile(path, raw.subarray(Math.max(0, raw.byteLength - LOG_TRUNCATE_TO_BYTES)), { mode: 0o600 });
+}
+
+function logFieldsForMark(mark: Annotation): Record<string, string | undefined> {
+  return { project: mark.project.project_id, session: mark.project.session_id, mark: mark.id };
+}
+
+function logFieldsForArgs(args: Record<string, unknown>): Record<string, string | undefined> {
+  return { project: stringArg(args, "project_id"), session: stringArg(args, "session_id"), mark: stringArg(args, "id") };
 }
 
 function jsonRpcError(id: string | number | null, code: number, message: string, data?: JsonValue): unknown {

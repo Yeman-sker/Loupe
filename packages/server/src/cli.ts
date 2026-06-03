@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
+import { appendDaemonLog, createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, summarizeMarkStore, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 import { fileURLToPath } from "node:url";
 import { runMcpProxy } from "./mcp-proxy.js";
 import { assert_storage_envelope, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe-server/shared";
@@ -14,6 +14,7 @@ export type CliOptions = {
   command: CliCommand;
   port: number;
   home?: string;
+  allLogs?: boolean;
 };
 
 export type RunCliOptions = {
@@ -44,7 +45,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
       return 0;
     }
     if (parsed.command === "serve") {
-      await serve(parsed);
+      await serve(parsed, stdout);
       return 0;
     }
     if (parsed.command === "ensure") {
@@ -60,13 +61,16 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
   }
 }
 
-export async function serve(options: { port?: number; home?: string }): Promise<LoupeHttpServer> {
+export async function serve(options: { port?: number; home?: string }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): Promise<LoupeHttpServer> {
   const port = options.port ?? LOUPE_DEFAULT_PORT;
   const home = homeOption(options.home);
   const token = await ensureToken(home);
-  const server = createServer({ port, ...home, token });
+  const server = createServer({ port, ...home, token, console: stdout });
   await listen(server, port);
   await writeServerStatus({ ...home, port, tokenPath: tokenPathForHome(server.loupe.home) });
+  await writeServeSummary(server, stdout);
+  await appendDaemonLog(server.loupe.home, "INFO", "daemon started", { fields: { port: String(port), home: server.loupe.home } });
+  installShutdownHandlers(server, stdout);
   return server;
 }
 
@@ -94,6 +98,7 @@ export async function ensure(options: { port?: number; home?: string }, stdout: 
 
   await waitForLoupeDaemon(port);
   writeLine(stdout, `Started Loupe daemon on port ${port}.`);
+  writeLine(stdout, `Logs: ${serverLogPathForHome(home)}.`);
   return undefined;
 }
 
@@ -105,6 +110,7 @@ export function parseCli(argv: string[]): CliOptions {
 
   let port: number | undefined;
   let home: string | undefined;
+  let allLogs = false;
   for (let index = 1; index < argv.length; index += 1) {
     if (command === "mcp-proxy") break;
     const arg = argv[index];
@@ -122,10 +128,14 @@ export function parseCli(argv: string[]): CliOptions {
       index += 1;
       continue;
     }
+    if (command === "logs" && arg === "--all") {
+      allLogs = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg ?? ""}`);
   }
 
-  return { command, port: port ?? LOUPE_DEFAULT_PORT, ...(home === undefined ? {} : { home }) };
+  return { command, port: port ?? LOUPE_DEFAULT_PORT, ...(home === undefined ? {} : { home }), ...(allLogs ? { allLogs } : {}) };
 }
 
 export async function init(options: { port?: number; home?: string }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): Promise<StatusCode> {
@@ -236,7 +246,7 @@ export async function status(options: { port?: number; home?: string }, stdout: 
   return code;
 }
 
-export async function logs(options: { home?: string }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout, stderr: Pick<NodeJS.WriteStream, "write"> = process.stderr): Promise<StatusCode> {
+export async function logs(options: { home?: string; allLogs?: boolean }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout, stderr: Pick<NodeJS.WriteStream, "write"> = process.stderr): Promise<StatusCode> {
   const home = resolveLoupeHome(options.home);
   const path = serverLogPathForHome(home);
   let raw: string;
@@ -255,8 +265,9 @@ export async function logs(options: { home?: string }, stdout: Pick<NodeJS.Write
     return 2;
   }
   const diagnostics = lines.filter((line) => /\b(error|failed|exception|fatal|corrupt|warn|warning|unauthorized|unsupported)\b/i.test(line));
-  const selected = (diagnostics.length > 0 ? diagnostics : lines).slice(-20);
-  writeLine(stdout, `${diagnostics.length > 0 ? "Recent Loupe server errors/warnings" : "Recent Loupe server log lines"} from ${path}:`);
+  const source = options.allLogs ? lines : (diagnostics.length > 0 ? diagnostics : lines);
+  const selected = source.slice(-20);
+  writeLine(stdout, `${options.allLogs ? "Recent Loupe server log lines" : diagnostics.length > 0 ? "Recent Loupe server errors/warnings" : "Recent Loupe server log lines"} from ${path}:`);
   for (const line of selected) writeLine(stdout, line);
   return diagnostics.length > 0 ? 2 : 0;
 }
@@ -360,7 +371,7 @@ async function readServerStatus(home: string): Promise<ServerStatusState> {
 }
 
 type MarksStatus =
-  | { status: "present"; path: string; projects: number; marks: number }
+  | { status: "present"; path: string; projects: number; marks: number; open: number }
   | { status: "missing"; path: string }
   | { status: "warning"; path: string; message: string };
 
@@ -370,7 +381,7 @@ async function readMarksStatus(home: string): Promise<MarksStatus> {
     const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
     assert_storage_envelope(parsed);
     const counts = countMarks(parsed);
-    return { status: "present", path, projects: counts.projects, marks: counts.marks };
+    return { status: "present", path, projects: counts.projects, marks: counts.marks, open: counts.open };
   } catch (error) {
     if (isNodeErrorCode(error, "ENOENT")) return { status: "missing", path };
     if (error instanceof SyntaxError) return { status: "warning", path, message: "corrupt JSON" };
@@ -379,13 +390,19 @@ async function readMarksStatus(home: string): Promise<MarksStatus> {
   }
 }
 
-function countMarks(envelope: StorageEnvelope): { projects: number; marks: number } {
+function countMarks(envelope: StorageEnvelope): { projects: number; marks: number; open: number } {
   let marks = 0;
+  let open = 0;
   const projects = Object.values(envelope.projects);
   for (const project of projects) {
-    for (const session of Object.values(project.sessions)) marks += session.marks.length;
+    for (const session of Object.values(project.sessions)) {
+      for (const mark of session.marks) {
+        marks += 1;
+        if (mark.lifecycle.task_status === "open") open += 1;
+      }
+    }
   }
-  return { projects: projects.length, marks };
+  return { projects: projects.length, marks, open };
 }
 
 function isServerStatusFile(value: unknown): value is ServerStatusFile {
@@ -412,6 +429,33 @@ function hasWarnings(warnings: readonly HealthWarning[] | undefined): boolean {
   return warnings !== undefined && warnings.length > 0;
 }
 
+function installShutdownHandlers(server: LoupeHttpServer, stdout: Pick<NodeJS.WriteStream, "write">): void {
+  const stop = (signal: NodeJS.Signals): void => {
+    void appendDaemonLog(server.loupe.home, "INFO", "daemon stopped", { fields: { signal } }).finally(() => {
+      server.close(() => {
+        writeLine(stdout, "Loupe daemon stopped.");
+        process.exit(0);
+      });
+    });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  server.once("close", () => {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  });
+}
+
+async function writeServeSummary(server: LoupeHttpServer, stdout: Pick<NodeJS.WriteStream, "write">): Promise<void> {
+  const marks = await summarizeMarkStore(server.loupe.home);
+  writeLine(stdout, `Loupe daemon listening on http://127.0.0.1:${server.loupe.port}`);
+  writeLine(stdout, `Loupe home: ${server.loupe.home}`);
+  writeLine(stdout, `Marks store: ${marks.path}`);
+  writeLine(stdout, `Projects: ${marks.projects}`);
+  writeLine(stdout, `Marks: ${marks.open} open, ${marks.marks} total`);
+  writeLine(stdout, `MCP: ready at http://127.0.0.1:${server.loupe.port}/mcp`);
+  writeLine(stdout, `Logs: ${serverLogPathForHome(server.loupe.home)}`);
+}
 function homeArgs(home: string | undefined): string {
   return home === undefined ? "" : ` --home ${home}`;
 }
@@ -462,6 +506,7 @@ function writeUsage(stream: Pick<NodeJS.WriteStream, "write">): void {
   writeLine(stream, "       loupe ensure [--port <n>] [--home <path>]");
   writeLine(stream, "       loupe init [--port <n>] [--home <path>]");
   writeLine(stream, "       loupe status [--port <n>] [--home <path>]");
+  writeLine(stream, "       loupe logs [--all] [--home <path>]");
   writeLine(stream, "       loupe mcp-proxy [--url <url>] [--token-path <path>]");
 }
 

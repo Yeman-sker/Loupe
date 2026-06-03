@@ -642,6 +642,7 @@ describe("Loupe Phase 0 CLI", () => {
     assert.deepEqual(parseCli(["init"]), { command: "init", port: LOUPE_DEFAULT_PORT });
     assert.deepEqual(parseCli(["status"]), { command: "status", port: LOUPE_DEFAULT_PORT });
     assert.deepEqual(parseCli(["logs"]), { command: "logs", port: LOUPE_DEFAULT_PORT });
+    assert.deepEqual(parseCli(["logs", "--all"]), { command: "logs", port: LOUPE_DEFAULT_PORT, allLogs: true });
     assert.deepEqual(parseCli(["status", "--port", "41234", "--home", "/tmp/loupe-test"]), { command: "status", port: 41234, home: "/tmp/loupe-test" });
 
     assert.deepEqual(parseCli(["mcp-proxy"]), { command: "mcp-proxy", port: LOUPE_DEFAULT_PORT });
@@ -660,6 +661,34 @@ describe("Loupe Phase 0 CLI", () => {
         return;
       }
       assert.equal(server.loupe.port, LOUPE_DEFAULT_PORT);
+    } finally {
+      if (server !== undefined) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("prints a serve summary and streams only WARN/ERROR to the serve console", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const stdout = new MemoryStream();
+    let server: LoupeHttpServer | undefined;
+    try {
+      server = await serve({ home, port: 0 }, stdout);
+      const address = server.address() as AddressInfo;
+      assert.match(stdout.text, /Loupe daemon listening on http:\/\/127\.0\.0\.1:0/);
+      assert.match(stdout.text, new RegExp(`Loupe home: ${escapeRegExp(home)}`));
+      assert.match(stdout.text, /Marks store: .*marks\.json/);
+      assert.match(stdout.text, /Projects: 0/);
+      assert.match(stdout.text, /Marks: 0 open, 0 total/);
+      assert.match(stdout.text, /MCP: ready at http:\/\/127\.0\.0\.1:0\/mcp/);
+      assert.match(stdout.text, /Logs: .*server\.log/);
+
+      const annotation = sampleAnnotation({ id: "serve-log-created", project_id: "serve-log-project", session_id: "serve-log-session" });
+      await assertOk(await postMark(`http://127.0.0.1:${address.port}`, server.loupe.token, annotation));
+      assert.doesNotMatch(stdout.text, /mark created/);
+
+      const unauthorized = await fetch(`http://127.0.0.1:${address.port}/v1/marks`);
+      assert.equal(unauthorized.status, 401);
+      assert.match(stdout.text, /WARN unauthorized GET \/v1\/marks/);
     } finally {
       if (server !== undefined) await closeServer(server);
       await rm(home, { recursive: true, force: true });
@@ -1004,6 +1033,62 @@ describe("Loupe Phase 0 CLI", () => {
     }
   });
 
+  it("supports --all logs and records mark lifecycle without leaking mark content", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
+    const token = "phase-5-log-all-token";
+    const server = createServer({ home, port: 0, token, version: "phase-5-log-all-test" });
+    try {
+      await listenEphemeral(server);
+      const address = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const annotation = sampleAnnotation({ id: "log-lifecycle-1", project_id: "log-project", session_id: "log-session" });
+
+      await assertOk(await postMark(baseUrl, token, annotation));
+      await assertOk(await postMark(baseUrl, token, annotation));
+      const resolved = await fetch(`${baseUrl}/v1/marks/${annotation.id}/resolve?project_id=${annotation.project.project_id}`, { method: "POST", headers: authHeaders(token) });
+      await assertOk(resolved);
+      const readBack = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+      const resolvedMark = (await readBack.json()).mark as AgentMark;
+      const resolvedLifecycle = resolvedMark.lifecycle as unknown;
+      assert.ok(isRecord(resolvedLifecycle));
+      const resolvedAt = resolvedLifecycle.task_resolved_at;
+      const noop = await fetch(`${baseUrl}/v1/marks/${annotation.id}/resolve?project_id=${annotation.project.project_id}`, { method: "POST", headers: authHeaders(token) });
+      await assertOk(noop);
+      const noopReadBack = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { headers: authHeaders(token) });
+      const noopMark = (await noopReadBack.json()).mark as AgentMark;
+      const noopLifecycle = noopMark.lifecycle as unknown;
+      assert.ok(isRecord(noopLifecycle));
+      assert.equal(noopLifecycle.task_resolved_at, resolvedAt);
+      const deleted = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { method: "DELETE", headers: authHeaders(token) });
+      assert.equal(deleted.status, 200);
+      const repeatedDelete = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${annotation.project.project_id}`, { method: "DELETE", headers: authHeaders(token) });
+      assert.equal(repeatedDelete.status, 404);
+
+      const rawLog = await readFile(serverLogPathForHome(home), "utf8");
+      assert.match(rawLog, /INFO project=log-project session=log-session mark=log-lifecycle-1 mark created/);
+      assert.match(rawLog, /INFO project=log-project session=log-session mark=log-lifecycle-1 mark updated/);
+      assert.match(rawLog, /INFO project=log-project session=log-session mark=log-lifecycle-1 mark resolved/);
+      assert.match(rawLog, /INFO project=log-project session=log-session mark=log-lifecycle-1 mark resolve noop/);
+      assert.match(rawLog, /INFO project=log-project session=log-session mark=log-lifecycle-1 mark deleted/);
+      assert.match(rawLog, /ERROR project=log-project mark=log-lifecycle-1 marks delete failed NOT_FOUND: Mark not found\./);
+      assert.doesNotMatch(rawLog, /Inspect nested target/);
+      assert.doesNotMatch(rawLog, /button\.save/);
+
+      const defaultLogs = new MemoryStream();
+      assert.equal(await logs({ home }, defaultLogs, new MemoryStream()), 2);
+      assert.doesNotMatch(defaultLogs.text, /mark created/);
+      assert.match(defaultLogs.text, /marks delete failed NOT_FOUND/);
+
+      const allLogs = new MemoryStream();
+      assert.equal(await logs({ home, allLogs: true }, allLogs, new MemoryStream()), 2);
+      assert.match(allLogs.text, /mark created/);
+      assert.match(allLogs.text, /marks delete failed NOT_FOUND/);
+    } finally {
+      if (server.listening) await closeServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces corrupt marks.json as warning semantics", async () => {
     const home = await mkdtemp(join(tmpdir(), "loupe-server-test-"));
     const homeHash = await homeHashForHome(home);
@@ -1270,6 +1355,10 @@ function assertNoLeakedKeys(value: unknown, disallowed: readonly string[]): void
     assert.equal(disallowed.includes(key), false, key);
     assertNoLeakedKeys(child, disallowed);
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -96,6 +96,20 @@ node --import tsx packages/server/src/cli.ts serve --port 7373
 # 随时查看健康状态 / token / marks 数量
 node --import tsx packages/server/src/cli.ts status
 ```
+前台 `serve` 启动后会打印 daemon 摘要并保持运行：
+
+```text
+Loupe daemon listening on http://127.0.0.1:7373
+Loupe home: /Users/you/.loupe
+Marks store: /Users/you/.loupe/marks.json
+Projects: 3
+Marks: 8 open, 12 total
+MCP: ready at http://127.0.0.1:7373/mcp
+Logs: /Users/you/.loupe/server.log
+```
+
+运行中终端只流式显示 `WARN` / `ERROR`；普通生命周期与 mark mutation 写入 `server.log`。
+
 
 **B. 已发布包（`@loupe-server/server` 提供 `loupe` / `loupe-server` 两个 bin）**
 
@@ -126,7 +140,7 @@ codex plugin marketplace add <owner>/<repo>
 
 本仓库 Claude/OMP marketplace 入口为 [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json)，Claude/OMP 插件定义位于 [`packages/claude-plugin/.claude-plugin/plugin.json`](./packages/claude-plugin/.claude-plugin/plugin.json)。Codex marketplace 入口为 [`.agents/plugins/marketplace.json`](./.agents/plugins/marketplace.json)，Codex 插件定义位于 [`packages/codex-plugin/.codex-plugin/plugin.json`](./packages/codex-plugin/.codex-plugin/plugin.json)。
 
-> `ensure` 先打 `GET /health`：是 Loupe daemon 就复用，端口被非 Loupe 进程占用则**明确报错**（MVP 不做动态端口发现）。
+> `ensure` 先打 `GET /health`：是 Loupe daemon 就复用，端口被非 Loupe 进程占用则**明确报错**（MVP 不做动态端口发现）。后台拉起成功后只打印启动结果与 `server.log` 路径，不跟随日志。
 
 ### 2. 加载浏览器扩展
 
@@ -256,6 +270,8 @@ daemon 在 `~/.loupe/`（可用 `--home` 覆盖）维护：
 | `~/.loupe/server.json` | `{ pid, port, token_path, started_at }` |
 | `~/.loupe/marks.json` | marks 的 atomic JSON 镜像；损坏时备份为 `.corrupted.<ts>` 并重建空 store |
 | `~/.loupe/server.log` | daemon 日志（`loupe logs` 读取） |
+
+`server.log` 使用一行一个事件的文本格式：ISO timestamp、level、可选 `key=value` 字段、message。`loupe logs` 默认显示最近 20 条 `WARN` / `ERROR`；没有诊断日志时显示最近普通日志。`loupe logs --all` 显示最近 20 条所有级别日志。日志超过 1 MiB 时 daemon 会保留尾部约 512 KiB 后继续写入。
 
 端口固定 `7373`（`--port` 可改）。
 
