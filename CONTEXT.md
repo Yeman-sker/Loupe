@@ -11,3 +11,20 @@ _Avoid_: Project daemon, workspace-bound daemon
 **Project**:
 A code workspace scope that owns marks and agent actions. Project identity is distinct from browser origin, route, and daemon process identity.
 _Avoid_: URL, origin, daemon
+
+
+**Loupe in-page surfaces**:
+The browser-page UI surfaces that support the mark trust loop: picking a DOM element, composing intent, showing pins and status, inspecting mark detail, listing current marks, and presenting page-level fallback or authorization states. This term excludes CLI, agent plugin, marketplace, and browser-popup experiences.
+_Avoid_: Loupe components, all Loupe UI
+
+**Selection frame**:
+The transient in-page highlight surface that indicates the current DOM target during picking. It preserves visual continuity as the target changes, so users experience one frame moving between targets rather than unrelated flashes.
+_Avoid_: DOM box, hover box
+
+**Intent input**:
+The compact in-page input used after picking a DOM target to capture the user's task intent. It prioritizes the required comment, defaults kind to `other`, and keeps secondary classification controls out of the primary path.
+_Avoid_: Full composer form, annotation form
+
+**Kind theme**:
+The visual treatment associated with an intent kind. It helps users distinguish mark categories in in-page surfaces, but it must not be the only carrier of status or meaning.
+_Avoid_: Category color only
