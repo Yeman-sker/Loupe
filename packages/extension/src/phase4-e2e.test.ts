@@ -8,7 +8,6 @@ import {
   LOUPE_EXTENSION_ROOT_ID,
   bootstrap_content_root,
   install_content_root,
-  is_picker_candidate,
   origin_permission_pattern,
   page_bridge_exposure,
 } from "./content.js";
@@ -49,11 +48,15 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     }, TypeError);
   });
 
-  it("MV3 content root is closed, hidden, and excluded from picker candidates", () => {
+  it("MV3 content root is closed, hidden, and exposes no page token", () => {
     const document = new FakeDocument();
 
-    assert.equal(install_content_root(document, { authorized: true }), true);
+    assert.equal(install_content_root(document, { authorized: false }), false);
     assert.equal(install_content_root(document), false);
+    assert.equal(document.getElementById(LOUPE_EXTENSION_ROOT_ID), null);
+
+    assert.equal(install_content_root(document, { authorized: true }), true);
+    assert.equal(install_content_root(document, { authorized: true }), false);
 
     const root = document.getElementById(LOUPE_EXTENSION_ROOT_ID);
     assert.ok(root);
@@ -61,10 +64,8 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.equal(root.dataset.loupeRoot, "true");
     assert.equal(root.dataset.exposesTokenToPage, "false");
     assert.equal(root.dataset.exposesPageWindowApi, "false");
+    assert.equal(root.style.pointerEvents, "none");
     assert.deepEqual(root.shadow_modes, ["closed"]);
-    assert.equal(is_picker_candidate(root), false);
-    assert.equal(is_picker_candidate(new FakeElement("button")), true);
-    assert.equal(is_picker_candidate(new FakeElement("button", { root: { host: root } })), false);
   });
 
   it("MV3 runtime bootstrap waits for host authorization before content root injection", async () => {
@@ -100,21 +101,23 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
   });
 
-  it("MV3 manifest content script gates root injection on authorized origin response", async () => {
+  it("MV3 manifest content script is an API-only authorization bootstrap", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
     assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/content.js"]);
     const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
     const source = await readFile(content_path, "utf8");
     const bootstrap_body = function_body(source, "bootstrapAuthorizedContent");
-    const start_body = function_body(source, "startAuthorizedContent");
+    const install_body = function_body(source, "installContentRoot");
 
     assert.match(source, /if \(!canBootstrapContentRuntime\(\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
     assert.match(bootstrap_body, /runtimeMessage\(\{ type: MESSAGE_GET_AUTH, origin: location\.origin \}\)/);
     assert.match(bootstrap_body, /if \(!isAuthorizedOriginResponse\(response\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
-    assert.doesNotMatch(source.slice(0, source.indexOf("function startAuthorizedContent")), /document\.createElement\("div"\)|document\.documentElement\.append\(host\)|shadow\.append\(style, app\)/);
-    assert.match(start_body, /document\.createElement\("div"\)/);
-    assert.match(start_body, /document\.documentElement\.append\(host\)/);
-    assert.match(start_body, /state\.authorized = true/);
+    assert.match(install_body, /root\.hidden = true/);
+    assert.match(install_body, /root\.dataset\.exposesTokenToPage = "false"/);
+    assert.match(install_body, /root\.dataset\.exposesPageWindowApi = "false"/);
+    assert.match(install_body, /root\.style\.pointerEvents = "none"/);
+    assert.doesNotMatch(source, /launcher|panel|composer|pin|detail|toolbar|overlay|Option\+L|keydown|mouseover|mouseenter|click/i);
+    assert.doesNotMatch(source, /sessionStorage\.setItem\([^)]*token|daemon\.token|authorization:|Bearer|LOUPE_AUTH_SCHEME/i);
   });
 
   it("MV3 manifest content script no-ops before authorized runtime response", async () => {
@@ -155,18 +158,9 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
             response_callback({ ok: true, authorized: true });
           },
         },
-        storage: { local: { get: async () => ({}), set: async () => undefined } },
       },
       document,
-      history: { pushState() {}, replaceState() {} },
-      location: { origin: "https://app.example.test", pathname: "/dashboard", search: "", hash: "", host: "app.example.test" },
-      MutationObserver: undefined,
-      queueMicrotask,
-      setTimeout,
-      crypto: { getRandomValues: (bytes: Uint8Array) => bytes.fill(7) },
-      clearTimeout,
-      URLSearchParams,
-      window: { addEventListener() {}, innerWidth: 1440, innerHeight: 900, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+      location: { origin: "https://app.example.test" },
     });
 
     new vm.Script(source, { filename: content_path }).runInContext(context);
@@ -175,45 +169,6 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
   });
 
-  it("MV3 manifest content runtime syncs saved marks only when daemon config exists without token exposure", async () => {
-    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
-    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
-    const source = await readFile(content_path, "utf8");
-
-    assert.match(source, /void syncSavedMark\(mark\)/);
-    assert.match(source, /fetch\(joinDaemonUrl\(daemon\.base_url, "\/v1\/marks"\), \{/);
-    assert.match(source, /authorization: `\$\{LOUPE_AUTH_SCHEME\} \$\{daemon\.token\}`/);
-    assert.match(source, /"content-type": "application\/json"/);
-    assert.match(function_body(source, "syncSavedMark"), /status: "synced"/);
-    assert.match(function_body(source, "syncSavedMark"), /last_synced_at: new Date\(\)\.toISOString\(\)/);
-    assert.match(function_body(source, "syncSavedMark"), /status: "failed"/);
-    assert.match(function_body(source, "syncSavedMark"), /retry_count: \(current\.sync\?\.retry_count \|\| 0\) \+ 1/);
-    assert.match(function_body(source, "syncSavedMark"), /last_error: errorMessage\(error\)/);
-    assert.match(function_body(source, "deleteMark"), /const deletedRemotely = await syncDeletedMark\(mark\)/);
-    assert.match(function_body(source, "syncDeletedMark"), /method: "DELETE"/);
-    assert.match(function_body(source, "syncDeletedMark"), /markDeleteUrl\(daemon\.base_url, mark\)/);
-    assert.match(function_body(source, "syncDeletedMark"), /status: "delete_pending"/);
-    assert.match(function_body(source, "markDeleteUrl"), /\/v1\/marks\/\$\{encodeURIComponent\(mark\.id\)\}/);
-    assert.match(function_body(source, "createAnnotation"), /candidates_considered: resolved\.candidates_considered/);
-    assert.match(function_body(source, "commitMarkResolution"), /candidates_considered: result\.candidates_considered/);
-    assert.match(function_body(source, "captureLocator"), /viewport_width: window\.innerWidth/);
-    assert.match(function_body(source, "captureLocator"), /viewport_height: window\.innerHeight/);
-    assert.match(function_body(source, "captureLocator"), /dpr: window\.devicePixelRatio \|\| 1/);
-    assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.session/);
-    assert.match(function_body(source, "readDaemonConfig"), /chrome\.storage\.local/);
-    assert.doesNotMatch(source, /sessionStorage\.setItem\([^)]*token|dataset\.[A-Za-z0-9_]*token/i);
-
-    assert.match(source, /const MESSAGE_SERVICE_WORKER_WAKE = "loupe\.service_worker\.wake";/);
-    assert.match(function_body(source, "initializeFullPickerApp"), /installStorageChangeListener\(\)/);
-    assert.match(function_body(source, "initializeFullPickerApp"), /void refreshFromDaemon\("boot"\)/);
-    assert.match(function_body(source, "refreshFromDaemon"), /runtimeMessage\(\{ type: MESSAGE_SERVICE_WORKER_WAKE, scope: state\.project, daemon \}\)/);
-    assert.match(function_body(source, "refreshFromDaemon"), /await loadMarks\(\)/);
-    assert.match(function_body(source, "installStorageChangeListener"), /chrome\.storage\?\.onChanged/);
-    assert.match(function_body(source, "installStorageChangeListener"), /areaName !== "local"/);
-    assert.match(function_body(source, "installStorageChangeListener"), /applyStorageMarkChanges\(changes\)/);
-    assert.match(function_body(source, "applyStorageMarkChanges"), /for \(const key in changes\)/);
-    assert.match(function_body(source, "openPanel"), /void refreshFromDaemon\("panel"\)/);
-  });
 
   it("MV3 extension host authorization helper grants only eligible http origins", async () => {
     const seen: string[][] = [];
@@ -245,38 +200,6 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.deepEqual(denied, { ok: false, authorized: false, origin: "file://tmp", error: "Unsupported page origin: file://tmp" });
   });
 
-  it("MV3 manifest content script defers route recovery until DOM quiet/timeout and guards stale route commits", async () => {
-    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
-    assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/content.js"]);
-    const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
-    const source = await readFile(content_path, "utf8");
-    const route_body = function_body(source, "handleRouteChange");
-    const scheduler_body = function_body(source, "scheduleMarkRecovery");
-    const commit_body = function_body(source, "commitMarkResolution");
-
-    assert.match(source, /const RECOVERY_QUIET_MS = 250;/);
-    assert.match(source, /const RECOVERY_TIMEOUT_MS = 1500;/);
-    assert.match(source, /new MutationObserver/);
-    assert.match(source, /observe\(document\.documentElement, \{ childList: true, subtree: true, attributes: true \}\)/);
-    assert.doesNotMatch(route_body, /renderPins\s*\(/);
-    assert.match(route_body, /scheduleMarkRecovery\("route"\)/);
-    assert.match(scheduler_body, /setTimeout\(\(\) => runScheduledRecovery\(epoch, routeKeySnapshot\), RECOVERY_QUIET_MS\)/);
-    assert.match(scheduler_body, /setTimeout\(\(\) => runScheduledRecovery\(epoch, routeKeySnapshot\), RECOVERY_TIMEOUT_MS\)/);
-    assert.match(commit_body, /epoch !== state\.recoveryEpoch/);
-    assert.match(commit_body, /routeKey !== state\.project\.route_key/);
-    assert.match(source, /window\.addEventListener\("scroll", repositionPins/);
-    assert.match(function_body(source, "repositionPins"), /commit: false/);
-  });
-
-  it("MV3 manifest exposes a visible popup for current-site authorization", async () => {
-    const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { action?: { default_title?: string; default_popup?: string }; background: { service_worker: string } };
-    assert.equal(manifest.action?.default_title, "Authorize Loupe on this page");
-    assert.equal(manifest.action?.default_popup, "src/popup.html");
-    const popup_path = path.join(EXTENSION_ROOT, manifest.action.default_popup);
-    const popup_source = await readFile(popup_path, "utf8");
-    assert.match(popup_source, /Authorize current site/);
-    assert.match(popup_source, /src="popup\.js"/);
-  });
 
   it("MV3 manifest background service-worker wake retries locals then reconciles daemon-only marks", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { background: { service_worker: string } };
@@ -556,40 +479,19 @@ class FakeElement {
   id = "";
   hidden = false;
   textContent = "";
-  className = "";
-  innerHTML = "";
   readonly dataset: Record<string, string | undefined> = {};
   readonly style: Record<string, string> = {};
   readonly shadow_modes: string[] = [];
 
-  constructor(readonly localName: string, private readonly options: { root?: unknown } = {}) {}
+  constructor(readonly localName: string) {}
 
   attachShadow(init: { mode: "closed" }) {
     this.shadow_modes.push(init.mode);
     return { append() {} };
   }
 
-  addEventListener() {}
-
   append() {}
 
-  querySelector(selector: string): FakeElement | null {
-    if (selector === ".row" || selector === ".status") return new FakeElement(selector);
-    if (selector === "button") return null;
-    return null;
-  }
-
-  querySelectorAll(): FakeElement[] {
-    return [];
-  }
-
-  remove() {}
-
-  setAttribute() {}
-
-  getRootNode(): unknown {
-    return this.options.root;
-  }
 }
 
 class FakeDocument {
@@ -603,10 +505,6 @@ class FakeDocument {
   createElement(tag: string): FakeElement {
     return new FakeElement(tag);
   }
-
-  addEventListener() {}
-
-  removeEventListener() {}
 
   append(node: unknown): void {
     if (node instanceof FakeElement && node.id !== "") this.element_by_id = { ...this.element_by_id, [node.id]: node };

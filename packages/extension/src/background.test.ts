@@ -151,7 +151,7 @@ describe("background origin authorization", () => {
     });
   });
 
-  it("requests current active tab origin permission from popup flow", async () => {
+  it("requests current active tab origin permission", async () => {
     const requested: string[][] = [];
     const reloaded: number[] = [];
 

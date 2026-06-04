@@ -32,21 +32,9 @@ export type ContentBootstrapEnvironment = Readonly<{
   readonly location?: { readonly origin?: string };
 }>;
 
-type ElementLike = {
-  readonly nodeType?: number;
-  readonly id?: string;
-  readonly localName?: string;
-  readonly dataset?: Record<string, string | undefined>;
-  getRootNode?: () => unknown;
-};
-
-type ShadowRootLike = {
-  readonly host?: unknown;
-};
-
 type DocumentLike = {
   getElementById(id: string): unknown;
-  createElement(tag: string): Omit<ElementLike, "id"> & {
+  createElement(tag: string): {
     id?: string;
     hidden?: boolean;
     textContent?: string;
@@ -78,17 +66,6 @@ export function origin_permission_pattern(origin: string): string | undefined {
   return `${url.protocol}//${url.host}/*`;
 }
 
-export function is_loupe_extension_element(value: unknown): boolean {
-  if (!is_element_like(value)) return false;
-  return value.id === LOUPE_EXTENSION_ROOT_ID || value.dataset?.loupeRoot === "true" || value.dataset?.loupePhase === "phase_0_placeholder";
-}
-
-export function is_picker_candidate(value: unknown): boolean {
-  if (!is_element_like(value)) return false;
-  if (is_loupe_extension_element(value)) return false;
-  const root = typeof value.getRootNode === "function" ? (value.getRootNode() as ShadowRootLike | undefined) : undefined;
-  return !is_loupe_extension_element(root?.host);
-}
 
 export function can_inject_content_root(authorization_state?: ContentHostAuthorizationState): boolean {
   return authorization_state?.authorized === true;
@@ -129,9 +106,6 @@ export function install_content_root(document_like: DocumentLike | undefined = g
   return true;
 }
 
-function is_element_like(value: unknown): value is ElementLike {
-  return typeof value === "object" && value !== null && (value as ElementLike).nodeType === 1;
-}
 
 function global_document(): DocumentLike | undefined {
   return typeof document === "undefined" ? undefined : (document as unknown as DocumentLike);
