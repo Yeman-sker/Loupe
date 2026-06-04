@@ -1,0 +1,144 @@
+/* ============================================================================
+   LOUPE · LOCKED DESIGN TOKENS  —  "Optical Instrument"
+   ----------------------------------------------------------------------------
+   Canonical token layer for the in-page surfaces. Values are LOCKED from the
+   chosen Tweaks state. Lift this file straight into packages/extension and
+   scope it to the Shadow DOM root.
+
+   Locked form decisions (the §13/§17 open-exploration items):
+     • Iris accent hue ........ 286  (muted ink-leaning violet — "the aperture")
+     • Pin shape .............. reticle (lens marker w/ kind arc + center number)
+     • Kind selector .......... rail (dots; selected one expands its label)
+     • Selection frame ........ brackets (camera-style corner ticks + readout)
+     • Pin detail ............. card (comment-first task card)
+     • View all ............... panel (right-docked, full height)
+     • Corners ................ default radii (--r-lg 14 / --r-md 10 / --r-sm 7)
+     • Motion ................. precise (--dur .19s, ease cubic-bezier(.22,.78,.18,1))
+
+   Colour model: the Iris accent + kind ramp + status tones use oklch() so hue
+   is a single knob and L/C stay perceptually even. oklch is the source of
+   truth; the "≈ #hex" notes are reference approximations only.
+   ============================================================================ */
+
+:root{
+  /* ---- type ---- */
+  --font:"Space Grotesk","PingFang SC","Noto Sans SC",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+
+  /* ---- Iris accent hue/chroma (the one brand knob) ---- */
+  --iris-h:286;          /* LOCKED hue */
+  --iris-c:.135;         /* chroma */
+
+  /* ---- radius (LOCKED: default) ---- */
+  --r-lg:14px;           /* cards, panels */
+  --r-md:10px;           /* buttons, fields */
+  --r-sm:7px;            /* chips, inner items */
+  --r-pin:50%;           /* pin / circular submit */
+
+  /* ---- hairline ---- */
+  --hair:1px;
+
+  /* ---- motion (LOCKED: precise) ---- */
+  --ease:cubic-bezier(.22,.78,.18,1);   /* precise material — primary */
+  --ease-out:cubic-bezier(.16,1,.3,1);  /* settle — entrances */
+  --dur:.19s;            /* default transition */
+  --dur-fast:.12s;       /* hover / press micro-feedback */
+  --dur-slow:.34s;       /* entrances, frame morph settle */
+}
+
+/* ===========================  LIGHT · "Daylight"  ========================== */
+[data-theme="light"]{
+  /* neutrals — warm lightbox paper, graphite ink */
+  --paper:#eceae4;            /* page              */
+  --stage:#e6e4dd;            /* inspected-surface tint */
+  --grid:rgba(28,27,24,.045); /* dev-app grid line */
+  --surface:#fbfaf7;          /* loupe card        */
+  --surface-2:#f4f2ec;        /* inset / hover     */
+  --raised:#ffffff;
+  --ink:#1c1b18;              /* primary text      */
+  --ink-2:#55524b;            /* secondary         */
+  --ink-3:#8d897e;            /* faint / mono meta */
+  --hairline:rgba(28,27,24,.12);
+  --hairline-2:rgba(28,27,24,.20);
+  --hairline-strong:rgba(28,27,24,.30);
+  --field:#ffffff;
+  --field-line:rgba(28,27,24,.22);
+
+  /* Iris accent — appears only where the instrument is live/looking */
+  --iris:oklch(.50 var(--iris-c) var(--iris-h));        /* ≈ #5a4fc6 */
+  --iris-hi:oklch(.57 var(--iris-c) var(--iris-h));     /* ≈ #6f63dd  hover */
+  --iris-press:oklch(.44 var(--iris-c) var(--iris-h));  /* ≈ #4b41ad  press */
+  --iris-fg:#fbfaf7;                                    /* text on iris */
+  --iris-veil:oklch(.50 var(--iris-c) var(--iris-h) / .12);
+  --iris-veil-2:oklch(.50 var(--iris-c) var(--iris-h) / .07);
+  --ring:0 0 0 3px oklch(.50 var(--iris-c) var(--iris-h) / .26);  /* focus ring */
+
+  /* status tones — carried by glyph + text, never colour-only */
+  --t-good:#3f7d52;   /* located / synced / done */
+  --t-warn:#9a6a1a;   /* drifted                 */
+  --t-bad:#a64238;    /* lost / sync failed / delete */
+  --t-open:#55524b;   /* open (neutral)          */
+  --t-neutral:#6a675f;/* local only / archived   */
+
+  /* kind ramp — muted refined ink-tints (accent only, never status) */
+  --k-bug:oklch(.56 .14 27);       /* ≈ #b8453d */
+  --k-copy:oklch(.58 .10 70);      /* ≈ #8a6a34 */
+  --k-style:oklch(.56 .13 350);    /* ≈ #b14878 */
+  --k-layout:oklch(.55 .11 245);   /* ≈ #4a6bb0 */
+  --k-question:oklch(.56 .09 195); /* ≈ #2c7d7a */
+  --k-other:oklch(.58 .015 286);   /* ≈ #8b8884 */
+
+  /* elevation — soft ambient + tighter key light, no blur */
+  --shadow-xs:0 1px 1.5px rgba(28,27,24,.06);
+  --shadow:0 1px 2px rgba(28,27,24,.05),0 6px 16px -8px rgba(28,27,24,.16);
+  --shadow-pop:0 1px 2px rgba(28,27,24,.06),0 22px 50px -18px rgba(28,27,24,.30),0 8px 18px -10px rgba(28,27,24,.16);
+}
+
+/* ===========================  DARK · "Instrument"  ======================== */
+[data-theme="dark"]{
+  --paper:#131316;
+  --stage:#171719;
+  --grid:rgba(255,255,255,.035);
+  --surface:#1d1d21;
+  --surface-2:#232328;
+  --raised:#26262b;
+  --ink:#eceae4;
+  --ink-2:#a8a59d;
+  --ink-3:#74726c;
+  --hairline:rgba(255,255,255,.10);
+  --hairline-2:rgba(255,255,255,.17);
+  --hairline-strong:rgba(255,255,255,.28);
+  --field:#161619;
+  --field-line:rgba(255,255,255,.18);
+
+  --iris:oklch(.70 var(--iris-c) var(--iris-h));        /* ≈ #9b8ef0 */
+  --iris-hi:oklch(.77 var(--iris-c) var(--iris-h));     /* ≈ #b1a6f6 */
+  --iris-press:oklch(.63 var(--iris-c) var(--iris-h));  /* ≈ #8579e0 */
+  --iris-fg:#15151a;
+  --iris-veil:oklch(.70 var(--iris-c) var(--iris-h) / .18);
+  --iris-veil-2:oklch(.70 var(--iris-c) var(--iris-h) / .10);
+  --ring:0 0 0 3px oklch(.70 var(--iris-c) var(--iris-h) / .30);
+
+  --t-good:#6cc28a; --t-warn:#d3a24e; --t-bad:#e07f72; --t-open:#a8a59d; --t-neutral:#9a978f;
+
+  --k-bug:oklch(.68 .14 27); --k-copy:oklch(.74 .10 75);
+  --k-style:oklch(.70 .13 350); --k-layout:oklch(.70 .11 248);
+  --k-question:oklch(.72 .09 195); --k-other:oklch(.66 .02 286);
+
+  --shadow-xs:0 1px 1.5px rgba(0,0,0,.4);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 20px -8px rgba(0,0,0,.6);
+  --shadow-pop:0 1px 2px rgba(0,0,0,.5),0 26px 56px -18px rgba(0,0,0,.7),0 10px 22px -10px rgba(0,0,0,.5);
+}
+
+/* kind → --k resolver (set data-kind on the surface, read var(--k)) */
+[data-kind="bug"]{--k:var(--k-bug)}        [data-kind="copy"]{--k:var(--k-copy)}
+[data-kind="style"]{--k:var(--k-style)}    [data-kind="layout"]{--k:var(--k-layout)}
+[data-kind="question"]{--k:var(--k-question)} [data-kind="other"]{--k:var(--k-other)}
+
+/* ----------------------------------------------------------------------------
+   Accessibility: reduce velocity/amplitude but preserve spatial continuity.
+   (Unsupported backdrop-filter is irrelevant here — the system uses no blur.)
+   ---------------------------------------------------------------------------- */
+@media (prefers-reduced-motion:reduce){
+  :root{--dur:.001s;--dur-fast:.001s;--dur-slow:.001s}
+}
