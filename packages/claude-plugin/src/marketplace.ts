@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isRecord, isStringArray, requireExactString, requireOptionalString, requireString } from "./manifest-guards.js";
 
 export type MarketplaceValidationResult = { ok: true } | { ok: false; errors: string[] };
 
@@ -70,34 +71,3 @@ function validatePlugin(plugin: unknown, index: number, errors: string[]): void 
   requireString(plugin.source, "ref", `${prefix}.source.ref`, errors);
 }
 
-function requireString(record: Record<string, unknown>, key: string, path: string, errors: string[]): void {
-  if (typeof record[key] !== "string" || record[key].length === 0) {
-    errors.push(`${path} must be a non-empty string`);
-  }
-}
-
-function requireOptionalString(record: Record<string, unknown>, key: string, path: string, errors: string[]): void {
-  if (key in record) {
-    requireString(record, key, path, errors);
-  }
-}
-
-function requireExactString(
-  record: Record<string, unknown>,
-  key: string,
-  expected: string,
-  path: string,
-  errors: string[],
-): void {
-  if (record[key] !== expected) {
-    errors.push(`${path} must be ${JSON.stringify(expected)}`);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
-}
