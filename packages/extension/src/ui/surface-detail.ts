@@ -5,7 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
-import { formatConfidencePercent } from "./status-tokens.js";
+import { formatConfidencePercent, kindToken } from "./status-tokens.js";
 
 export type DetailOpts = {
   t: Translate;
@@ -55,7 +55,9 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
       : pin.sync === "syncing"
         ? makeTok(dom, "◌", t("sync.syncing"), "open")
         : makeTok(dom, "✓", t("sync.synced"), "good");
-  const kindTok = dom.el("span", { class: `tok tok--kind`, data: { kind: pin.kind }, text: pin.kind });
+  const kind = kindToken(t, pin.kind);
+  const kindTok = makeTok(dom, kind.glyph, kind.label, kind.cls);
+  kindTok.setAttribute("data-kind", pin.kind);
   const metaEl = dom.el("div", { class: "d-meta" }, [taskTok, locTok, syncTok, kindTok]);
 
   // Actions

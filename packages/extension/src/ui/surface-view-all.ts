@@ -5,7 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
-import { formatConfidencePercent } from "./status-tokens.js";
+import { formatConfidencePercent, kindToken } from "./status-tokens.js";
 
 export type ViewAllOpts = {
   t: Translate;
@@ -139,7 +139,9 @@ function buildItem(dom: Dom, p: PinRecord, opts: ViewAllOpts, t: Translate): HTM
       : p.sync === "syncing"
         ? makeTok(dom, "◌", t("sync.syncing"), "open")
         : makeTok(dom, "✓", t("sync.synced"), "good");
-  const kindTok = dom.el("span", { class: "tok tok--kind", data: { kind: p.kind }, text: p.kind });
+  const kind = kindToken(t, p.kind);
+  const kindTok = makeTok(dom, kind.glyph, kind.label, kind.cls);
+  kindTok.setAttribute("data-kind", p.kind);
 
   const tag = (p.element as Element).tagName?.toLowerCase() ?? "?";
   const sel = selectorPreview(p.element as Element);
