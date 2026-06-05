@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { appendDaemonLog, createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, summarizeMarkStore, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 import { fileURLToPath } from "node:url";
 import { runMcpProxy } from "./mcp-proxy.js";

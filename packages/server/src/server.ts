@@ -1,17 +1,10 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { appendFile, copyFile, mkdir, open, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { basename, join, resolve } from "node:path";
-import { homedir } from "node:os";
-import { createHash, randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 import {
   assert_annotation,
-  assert_storage_envelope,
   error_codes,
   LOUPE_DAEMON_NAME,
   LOUPE_DEFAULT_PORT,
-  LOUPE_SCHEMA_VERSION,
-  LOUPE_TOKEN_MIN_BYTES,
   type AgentMark,
   type Annotation,
   type DeleteMarkResponse,
@@ -19,22 +12,38 @@ import {
   type ListMarksResponse,
   type ProjectScopeCandidate,
   type ResolveMarkResponse,
-  type ServerStatusFile,
   type StorageEnvelope,
 } from "@loupe-server/shared";
 
-export type LoupeHomeOptions = {
-  home?: string;
-};
+import { appendDaemonLog } from "./daemon-log.js";
+import {
+  homeHashForHome,
+  projectIdForWorkspaceRootHash,
+  resolveLoupeHome,
+  workspaceRootHashForRoot,
+  type LoupeHomeOptions,
+} from "./loupe-home.js";
+import { loadMarkStore, saveStore, type MarkStore, type StoreWarning } from "./mark-store.js";
 
-export type TokenOptions = LoupeHomeOptions;
-
-export type ServerStatusOptions = LoupeHomeOptions & {
-  port?: number;
-  pid?: number;
-  tokenPath?: string;
-  startedAt?: string;
-};
+export type { LoupeHomeOptions, ServerStatusOptions, TokenOptions } from "./loupe-home.js";
+export {
+  canonicalLoupeHome,
+  canonicalWorkspaceRoot,
+  ensureLoupeHome,
+  ensureToken,
+  homeHashForHome,
+  marksPathForHome,
+  projectIdForWorkspaceRootHash,
+  resolveLoupeHome,
+  serverLogPathForHome,
+  serverStatusPathForHome,
+  sha256Base64Url,
+  tokenPathForHome,
+  workspaceRootHashForRoot,
+  writeServerStatus,
+} from "./loupe-home.js";
+export { appendDaemonLog } from "./daemon-log.js";
+export { summarizeMarkStore } from "./mark-store.js";
 
 export type LoupeServerOptions = LoupeHomeOptions & {
   port?: number;
@@ -62,16 +71,7 @@ type JsonRpcRequest = {
 };
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-type StoreWarning = { code: string; message: string; file?: string };
 type Mutation = "read" | "resolve" | "delete";
-
-type MarkStore = {
-  home: string;
-  path: string;
-  envelope: StorageEnvelope;
-  warnings: StoreWarning[];
-  save_chain: Promise<void>;
-};
 
 type RequestContext = {
   port: number;
@@ -86,126 +86,6 @@ type RequestContext = {
 
 const DEFAULT_VERSION = "0.0.0";
 const MAX_BODY_BYTES = 1_048_576;
-const LOG_MAX_BYTES = 1_048_576;
-const LOG_TRUNCATE_TO_BYTES = 524_288;
-
-export function resolveLoupeHome(home?: string): string {
-  if (!home || home === "~/.loupe") return resolve(homedir(), ".loupe");
-  if (home === "~") return resolve(homedir());
-  if (home.startsWith("~/")) return resolve(homedir(), home.slice(2));
-  return resolve(home);
-}
-
-export async function ensureLoupeHome(options: LoupeHomeOptions = {}): Promise<string> {
-  const home = resolveLoupeHome(options.home);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  return home;
-}
-
-export function tokenPathForHome(home: string): string {
-  return join(home, "token");
-}
-
-export function serverStatusPathForHome(home: string): string {
-  return join(home, "server.json");
-}
-
-export function marksPathForHome(home: string): string {
-  return join(home, "marks.json");
-}
-export type MarkStoreSummary = {
-  path: string;
-  projects: number;
-  marks: number;
-  open: number;
-  warnings: StoreWarning[];
-};
-
-export async function summarizeMarkStore(home: string): Promise<MarkStoreSummary> {
-  const store = await loadMarkStore(home);
-  const counts = countStoreMarks(store.envelope);
-  return { path: store.path, projects: counts.projects, marks: counts.marks, open: counts.open, warnings: store.warnings };
-}
-
-function countStoreMarks(envelope: StorageEnvelope): { projects: number; marks: number; open: number } {
-  let marks = 0;
-  let open = 0;
-  const projects = Object.values(envelope.projects);
-  for (const project of projects) {
-    for (const session of Object.values(project.sessions)) {
-      for (const mark of session.marks) {
-        marks += 1;
-        if (mark.lifecycle.task_status === "open") open += 1;
-      }
-    }
-  }
-  return { projects: projects.length, marks, open };
-}
-
-
-export function serverLogPathForHome(home: string): string {
-  return join(home, "server.log");
-}
-
-export async function canonicalLoupeHome(home: string): Promise<string> {
-  return realpath(resolveLoupeHome(home));
-}
-
-export async function homeHashForHome(home: string): Promise<string> {
-  return sha256Base64Url(await canonicalLoupeHome(home));
-}
-
-export async function canonicalWorkspaceRoot(workspaceRoot: string): Promise<string> {
-  return realpath(resolve(workspaceRoot));
-}
-
-export async function workspaceRootHashForRoot(workspaceRoot: string): Promise<string> {
-  return sha256Base64Url(await canonicalWorkspaceRoot(workspaceRoot));
-}
-
-export function projectIdForWorkspaceRootHash(workspaceRootHash: string): string {
-  return `loupe_v1_${workspaceRootHash}`;
-}
-
-function sha256Base64Url(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("base64url");
-}
-
-export async function ensureToken(options: TokenOptions = {}): Promise<string> {
-  const home = await ensureLoupeHome(options);
-  const tokenPath = tokenPathForHome(home);
-  try {
-    const existing = (await readFile(tokenPath, "utf8")).trim();
-    if (existing.length > 0) return existing;
-  } catch (error) {
-    if (!isNodeErrorCode(error, "ENOENT")) throw error;
-  }
-
-  const token = randomBytes(LOUPE_TOKEN_MIN_BYTES).toString("base64url");
-  const handle = await open(tokenPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-  try {
-    await handle.writeFile(`${token}\n`, "utf8");
-  } finally {
-    await handle.close();
-  }
-  return token;
-}
-
-export async function writeServerStatus(options: ServerStatusOptions = {}): Promise<ServerStatusFile> {
-  const home = await ensureLoupeHome(options);
-  const tokenPath = options.tokenPath ?? tokenPathForHome(home);
-  const status: ServerStatusFile = {
-    pid: options.pid ?? process.pid,
-    port: options.port ?? LOUPE_DEFAULT_PORT,
-    token_path: tokenPath,
-    started_at: options.startedAt ?? new Date().toISOString(),
-  };
-  const statusPath = serverStatusPathForHome(home);
-  const tmpPath = `${statusPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(status, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await rename(tmpPath, statusPath);
-  return status;
-}
 
 export function parseBearerToken(header: string | string[] | undefined): string | undefined {
   if (Array.isArray(header) || header === undefined) return undefined;
@@ -303,58 +183,6 @@ function isAuthorized(request: IncomingMessage, token: string): boolean {
   return token.length > 0 && received === token;
 }
 
-async function loadMarkStore(home: string): Promise<MarkStore> {
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  const path = marksPathForHome(home);
-  const warnings: StoreWarning[] = [];
-  let envelope = emptyEnvelope();
-
-  try {
-    const raw = await readFile(path, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    assert_storage_envelope(parsed);
-    envelope = parsed;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ENOENT")) {
-      // Empty first-run store.
-    } else if (error instanceof SyntaxError) {
-      const backup = `${path}.corrupted.${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      await copyOrRenameCorruptFile(path, backup);
-      warnings.push({ code: "CORRUPT_MARKS_JSON", message: "marks.json was corrupt JSON and was backed up.", file: basename(backup) });
-    } else {
-      throw error;
-    }
-  }
-
-  const store: MarkStore = { home, path, envelope, warnings, save_chain: Promise.resolve() };
-  if (warnings.length > 0) await saveStore(store);
-  return store;
-}
-
-function emptyEnvelope(): StorageEnvelope {
-  return { schema_version: LOUPE_SCHEMA_VERSION, projects: {} };
-}
-
-async function copyOrRenameCorruptFile(path: string, backup: string): Promise<void> {
-  try {
-    await rename(path, backup);
-  } catch (error) {
-    if (!isNodeErrorCode(error, "EXDEV")) throw error;
-    await copyFile(path, backup);
-  }
-}
-
-async function saveStore(store: MarkStore): Promise<void> {
-  const save = store.save_chain.then(async () => {
-    await mkdir(store.home, { recursive: true, mode: 0o700 });
-    const tmpPath = `${store.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmpPath, `${JSON.stringify(store.envelope, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await rename(tmpPath, store.path);
-  });
-  store.save_chain = save.catch(() => undefined);
-  await save;
-}
-
 async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
   let rpc: JsonRpcRequest;
   try {
@@ -401,7 +229,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     const call = isRecord(rpc.params) ? rpc.params : undefined;
     const name = typeof call?.name === "string" ? call.name : undefined;
     const args = isRecord(call?.arguments) ? call.arguments : {};
-    const result = await callMcpTool(store, name, args, console);
+    const result = await callMcpTool(store, name, args);
     if ("error" in result) {
       await appendDaemonLog(store.home, "ERROR", `mcp tools/call failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
       writeJson(response, 200, jsonRpcError(id, -32000, result.error.message, result.error));
@@ -432,7 +260,7 @@ function mcpTools(): unknown[] {
   ];
 }
 
-async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>, console?: Pick<NodeJS.WriteStream, "write">): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
+async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
   if (name === "list_marks") {
     const result = listMarks(store, args);
     if (result.kind === "ok") return { result: result.value };
@@ -807,41 +635,6 @@ async function handleRequestError(request: IncomingMessage, response: ServerResp
   writeJson(response, 500, { error: { code: error_codes.internal_error, message: "Internal server error." } });
 }
 
-export async function appendDaemonLog(home: string, level: "INFO" | "ERROR" | "WARN", message: string, options: { fields?: Record<string, string | undefined>; console?: Pick<NodeJS.WriteStream, "write"> | undefined } = {}): Promise<void> {
-  const line = formatDaemonLogLine(level, message, options.fields);
-  try {
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    const path = serverLogPathForHome(home);
-    await truncateDaemonLogIfNeeded(path);
-    await appendFile(path, `${line}\n`, { encoding: "utf8", mode: 0o600 });
-  } catch {
-    // Daemon logs are best-effort diagnostics only.
-  }
-  if ((level === "WARN" || level === "ERROR") && options.console !== undefined) options.console.write(`${line}\n`);
-}
-
-function formatDaemonLogLine(level: "INFO" | "ERROR" | "WARN", message: string, fields: Record<string, string | undefined> = {}): string {
-  const parts = [new Date().toISOString(), level];
-  for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined && value.length > 0) parts.push(`${key}=${value}`);
-  }
-  parts.push(message);
-  return parts.join(" ");
-}
-
-async function truncateDaemonLogIfNeeded(path: string): Promise<void> {
-  let size: number;
-  try {
-    size = (await stat(path)).size;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ENOENT")) return;
-    throw error;
-  }
-  if (size <= LOG_MAX_BYTES) return;
-  const raw = await readFile(path);
-  await writeFile(path, raw.subarray(Math.max(0, raw.byteLength - LOG_TRUNCATE_TO_BYTES)), { mode: 0o600 });
-}
-
 function logFieldsForMark(mark: Annotation): Record<string, string | undefined> {
   return { project: mark.project.project_id, session: mark.project.session_id, mark: mark.id };
 }
@@ -874,8 +667,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isJsonRpcId(value: unknown): value is string | number | null {
   return typeof value === "string" || typeof value === "number" || value === null;
-}
-
-function isNodeErrorCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
 }
