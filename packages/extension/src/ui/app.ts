@@ -17,7 +17,7 @@ import {
 import { renderReady } from "./surface-ready.js";
 import { attachPicker, type HoverTarget, type Picker } from "./surface-picker.js";
 import { renderIntent, type Viewport } from "./surface-intent.js";
-import { renderPin, type PinRecord } from "./surface-pin.js";
+import { renderPin, type PinRecord, type RenderPinOpts } from "./surface-pin.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -158,22 +158,55 @@ const SURFACES_CSS = `
 /* Pin */
 .lp-pin{position:absolute;width:24px;height:24px;
   transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
-  animation:lp-pin-in var(--dur-slow) var(--ease-out) both}
+  animation:lp-pin-in var(--dur-slow) var(--ease-out) both;
+  transition:transform var(--dur-fast) var(--ease)}
+.lp-pin:hover{transform:translate(-50%,-50%) scale(1.12)}
+.lp-pin:focus-visible{outline:none}
+.lp-pin:focus-visible .lp-pin-ring{box-shadow:var(--ring),var(--shadow-xs)}
 .lp-pin-ring{width:24px;height:24px;border-radius:50%;
-  border:var(--hair) solid var(--hairline-2);background:var(--surface);
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:var(--shadow-xs);position:relative}
-.lp-pin-num{font:600 11px/1 var(--mono);color:var(--ink-2);
+  border:var(--hair) solid var(--hairline-strong);background:var(--surface);
+  display:grid;place-items:center;
+  box-shadow:0 0 0 2px var(--surface),var(--shadow);position:relative}
+.lp-pin-num{font:600 11px/1 var(--mono);color:var(--ink);letter-spacing:-.02em;
   position:relative;z-index:1}
-.lp-pin--open .lp-pin-ring::after{content:"";position:absolute;inset:-3px;
-  border-radius:50%;border:1.5px solid var(--iris);opacity:.5;
-  animation:lp-pin-pulse 2.6s ease-in-out infinite}
-@keyframes lp-pin-pulse{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:.15;transform:scale(1.4)}}
+/* iris pulse for open+located pins */
+.lp-pin-pulse{position:absolute;inset:0;border-radius:50%;
+  box-shadow:0 0 0 1.5px var(--iris-veil);
+  animation:lp-pin-ping 2.6s var(--ease-out) infinite}
+@keyframes lp-pin-ping{0%{transform:scale(1);opacity:.8}70%{transform:scale(1.8);opacity:0}100%{opacity:0}}
 @keyframes lp-pin-in{
   from{opacity:0;transform:translate(-50%,-50%) scale(.4)}
-  85%{transform:translate(-50%,-50%) scale(1.12)}
+  60%{opacity:1;transform:translate(-50%,-50%) scale(1.12)}
   to{opacity:1;transform:translate(-50%,-50%) scale(1)}
 }
+/* state badges */
+.lp-pin-badge{position:absolute;right:-5px;top:-5px;width:14px;height:14px;border-radius:50%;
+  display:grid;place-items:center;font:700 8px/1 var(--mono);color:#fff;
+  box-shadow:0 0 0 1.5px var(--surface)}
+.lp-pin--done .lp-pin-ring{background:var(--surface-2);border-color:var(--hairline)}
+.lp-pin--done .lp-pin-num{color:var(--ink-3)}
+.lp-pin--done .lp-pin-arc{opacity:.4}
+.lp-pin--done .lp-pin-badge{background:var(--t-good)}
+.lp-pin--drift .lp-pin-ring{border-style:dashed;border-color:var(--t-warn)}
+.lp-pin--drift .lp-pin-badge{background:var(--t-warn)}
+.lp-pin--lost .lp-pin-ring{background:transparent;border-style:dashed;border-color:var(--hairline-strong);box-shadow:0 0 0 2px var(--surface)}
+.lp-pin--lost .lp-pin-num{color:var(--ink-3)}
+.lp-pin--lost .lp-pin-arc{display:none}
+.lp-pin--lost .lp-pin-badge{background:var(--t-bad)}
+/* stack chip */
+.lp-pin-stackn{position:absolute;right:-6px;bottom:-6px;min-width:14px;height:14px;
+  padding:0 3px;border-radius:8px;background:var(--ink);color:var(--paper);
+  font:700 8px/14px var(--mono);text-align:center;box-shadow:0 0 0 1.5px var(--surface)}
+/* tooltip */
+.lp-pin-tip{position:absolute;bottom:calc(100% + 9px);left:50%;
+  transform:translateX(-50%) translateY(3px);white-space:nowrap;
+  font:600 11px/1 var(--font);color:var(--ink);background:var(--surface);
+  border:var(--hair) solid var(--hairline);padding:7px 10px;border-radius:999px;
+  box-shadow:var(--shadow-pop);opacity:0;pointer-events:none;
+  display:inline-flex;align-items:center;gap:7px;
+  transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.lp-pin-tip-sep{color:var(--ink-3)}
+.lp-pin:hover .lp-pin-tip,.lp-pin:focus-visible .lp-pin-tip{opacity:1;transform:translateX(-50%) translateY(0)}
 `;
 
 export async function mount(opts: MountOptions): Promise<SurfaceApp> {
@@ -283,14 +316,23 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachIntent = host.mount(intentEl);
     }
 
-    // Pins
-    for (const pin of state.pins) {
+    // Pins — group by element to compute stacking offsets
+    {
       const view = opts.document.defaultView;
       const scrollY = view?.scrollY ?? 0;
       const vw = view?.innerWidth ?? 1024;
       const vh = view?.innerHeight ?? 768;
-      const pinEl = renderPin(host.dom, pin, scrollY, vw, vh);
-      pinDetachers.push(host.mount(pinEl));
+      const elementCount = new Map<Element, number>();
+      for (const pin of state.pins) {
+        const idx = elementCount.get(pin.element) ?? 0;
+        elementCount.set(pin.element, idx + 1);
+        const renderOpts: RenderPinOpts = {
+          stackOffset: idx * 16,
+          onOpen: (p) => { console.log("pin:open", p.id); },
+        };
+        const pinEl = renderPin(host.dom, pin, scrollY, vw, vh, renderOpts);
+        if (pinEl !== null) pinDetachers.push(host.mount(pinEl));
+      }
     }
   }
 
@@ -331,12 +373,16 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     // Capture pin position before clearing intent
     const rect = state.intent?.rect ?? element.getBoundingClientRect();
     state.markCount += 1;
-    const pinRecord = {
+    const pinRecord: PinRecord = {
       id: annotation.id,
       num: state.markCount,
       element,
       rect,
       kind,
+      task: "open",
+      loc: "located",
+      confidence: 100,
+      sync: "local",
     };
     state.pins.push(pinRecord);
     state.intent = null;
@@ -401,10 +447,14 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     }
   }
   opts.document.addEventListener("keydown", onGlobalKey);
+  const win = opts.document.defaultView;
+  win?.addEventListener("resize", render);
+  void opts.document.fonts?.ready.then(() => { render(); });
 
   const app: SurfaceApp = {
     unmount: () => {
       opts.document.removeEventListener("keydown", onGlobalKey);
+      win?.removeEventListener("resize", render);
       clearSurfaces();
       host.destroy();
     },
