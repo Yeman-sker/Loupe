@@ -1,9 +1,6 @@
 // Surface 1 — Host authorization CTA. Shown in-page on an unauthorized origin
-// before any picker can inject. The actual grant happens via the toolbar action
-// (chrome.action.onClicked → chrome.permissions.request), because MV3 cannot
-// call permissions.request from a content-script click (the user gesture is lost
-// across the content→service-worker boundary). So this card is the discoverable
-// prompt and routes the user to the toolbar; it does not grant directly.
+// before any picker can inject. Matches the locked prototype's primary "Allow
+// site" CTA; the caller owns the MV3 permission request bridge.
 // Markup/spacing ported from docs/ui-ux/prototypes/loupe-surfaces.jsx (HostAuth).
 
 import { type Dom } from "./dom.js";
@@ -11,6 +8,7 @@ import { type Translate } from "./i18n.js";
 
 export type HostAuthOpts = {
   t: Translate;
+  onAllow: () => void;
   onDismiss: () => void;
 };
 
@@ -26,7 +24,7 @@ const LOUPE_MARK_SVG =
   "</svg>";
 
 export function renderHostAuth(dom: Dom, opts: HostAuthOpts): HTMLElement {
-  const { t, onDismiss } = opts;
+  const { t, onAllow, onDismiss } = opts;
 
   const mark = dom.el("span", { class: "cta-mark" });
   mark.innerHTML = LOUPE_MARK_SVG;
@@ -36,10 +34,12 @@ export function renderHostAuth(dom: Dom, opts: HostAuthOpts): HTMLElement {
     dom.el("span", { class: "wm", text: "Loupe" }),
   ]);
 
-  const hint = dom.el("div", { class: "cta-hint" }, [
-    dom.el("span", { class: "arrow", text: "↑", attrs: { "aria-hidden": "true" } }),
-    dom.el("span", { text: t("auth.toolbar") }),
-  ]);
+  const allow = dom.el("button", {
+    class: "btn primary",
+    attrs: { type: "button" },
+    text: t("auth.allow"),
+    on: { click: onAllow },
+  });
 
   const notNow = dom.el("button", {
     class: "btn ghost",
@@ -55,8 +55,7 @@ export function renderHostAuth(dom: Dom, opts: HostAuthOpts): HTMLElement {
     brand,
     dom.el("h3", { text: t("auth.title") }),
     dom.el("p", { text: t("auth.body") }),
-    hint,
-    dom.el("div", { class: "cta-row" }, [notNow]),
+    dom.el("div", { class: "cta-row" }, [allow, notNow]),
   ]);
 
   // Esc dismisses (A11y: Esc closes the active surface). Focus the card so the

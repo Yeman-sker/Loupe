@@ -71,10 +71,10 @@ Loupe onboarding should become **local-project gated** and **status driven**:
   Loupe later if the product chooses to support non-local origins.
 - The daemon/pairing surface becomes a compact status/diagnostic strip rather than a token
   form.
-- If accepted, this supersedes the user-facing part of
+- This supersedes the user-facing part of
   `docs/adp-20260605-host-auth-grant-via-toolbar.md`; the toolbar grant path can remain as
   a fallback implementation, but not as the primary visible CTA.
 
 ## Status
 
-Proposed
+Accepted

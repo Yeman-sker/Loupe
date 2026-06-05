@@ -8,6 +8,7 @@ import {
   LOUPE_EXTENSION_ROOT_ID,
   bootstrap_content_root,
   install_content_root,
+  is_local_project_candidate_origin,
   origin_permission_pattern,
   page_bridge_exposure,
 } from "./content.js";
@@ -101,6 +102,15 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.ok(document.getElementById(LOUPE_EXTENSION_ROOT_ID));
   });
 
+  it("classifies only local project candidate origins for unauthenticated onboarding", () => {
+    assert.equal(is_local_project_candidate_origin("http://localhost:5173"), true);
+    assert.equal(is_local_project_candidate_origin("http://127.0.0.1:4173"), true);
+    assert.equal(is_local_project_candidate_origin("http://192.168.1.10:3000"), true);
+    assert.equal(is_local_project_candidate_origin("http://10.0.0.4:3000"), true);
+    assert.equal(is_local_project_candidate_origin("https://app.example.test"), false);
+    assert.equal(is_local_project_candidate_origin("https://example.com"), false);
+  });
+
   it("MV3 manifest content script is an API-only authorization bootstrap", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
     assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/content.js"]);
@@ -111,9 +121,10 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
 
     assert.match(source, /if \(!canBootstrapContentRuntime\(\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
     assert.match(bootstrap_body, /runtimeMessage\(\{ type: MESSAGE_GET_AUTH, origin: location\.origin \}\)/);
-    // Inert marker is installed only when authorized; the surface runtime loads
-    // in both states (unauthorized → host-authorization CTA only).
+    // Inert marker is installed only when authorized; unauthorized onboarding
+    // is gated to local project candidates so ordinary sites stay silent.
     assert.match(bootstrap_body, /const authorized = isAuthorizedOriginResponse\(response\)/);
+    assert.match(bootstrap_body, /!authorized && !isLocalProjectCandidateOrigin\(location\.origin\)/);
     assert.match(bootstrap_body, /if \(authorized\) installContentRoot\(\)/);
     assert.match(install_body, /root\.hidden = true/);
     assert.match(install_body, /root\.dataset\.exposesTokenToPage = "false"/);
@@ -554,4 +565,3 @@ class ManifestBackgroundChrome {
     request: async () => false,
   };
 }
-

@@ -311,6 +311,11 @@ describe("UI-1 · surface host mount → update → unmount", () => {
     assert.ok(hasClass(cta, "card"), "CTA uses the card primitive");
     assert.equal(cta.getAttribute("role"), "dialog");
     assert.ok(!descendants(wrapper).some((e) => hasClass(e, "lp-ready")), "no ready panel when unauthorized");
+    assert.ok(
+      descendants(cta).some((e) => e.tagName === "button" && hasClass(e, "primary") && e.textContent === "允许本站点"),
+      "prototype-faithful Allow site CTA is present",
+    );
+    assert.equal(descendants(cta).some((e) => hasClass(e, "cta-hint")), false, "toolbar hint is not a separate CTA");
 
     // "Not now" (auth.not, zh default) dismisses the card → overlay empties.
     const notNow = present(descendants(cta).find((e) => e.tagName === "button" && e.textContent === "以后再说"));

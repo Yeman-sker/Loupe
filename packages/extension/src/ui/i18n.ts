@@ -11,10 +11,6 @@ const DICT: Dict = {
   "auth.body": ["在本页选取真实 DOM 元素,把它变成给 agent 的任务。", "Pick real DOM elements on this page and turn them into agent tasks."],
   "auth.allow": ["允许本站点", "Allow site"],
   "auth.not": ["以后再说", "Not now"],
-  // MV3 can't grant host permission from an in-page click (the user gesture is
-  // lost across the content→service-worker boundary), so the card routes the
-  // grant to the toolbar action instead of the prototype's in-page "Allow".
-  "auth.toolbar": ["点击浏览器工具栏的 Loupe 图标授权本站点", "Click the Loupe icon in your browser toolbar to authorize this site"],
 
   "proj.title": ["为本站点选择 Project", "Choose project for this site"],
   "proj.sub": ["此 origin 关联了多个 Project — Project 是 mark 的安全边界。", "This origin maps to several projects — a project is a mark's trust boundary."],

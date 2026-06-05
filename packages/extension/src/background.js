@@ -93,9 +93,19 @@ async function handleRequestOriginAuth(message, sender) {
   const origin = originFromMessageOrSender(message, sender);
   if (!origin) return { ok: false, authorized: false, error: "No page origin available" };
   const origins = [originPattern(origin)];
-  const alreadyAuthorized = await chrome.permissions.contains({ origins });
-  if (alreadyAuthorized) return { ok: true, authorized: true, origin, origin_pattern: origins[0] };
-  const granted = await chrome.permissions.request({ origins });
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins });
+  } catch (_e) {
+    const alreadyAuthorized = await chrome.permissions.contains({ origins });
+    if (alreadyAuthorized) return { ok: true, authorized: true, origin, origin_pattern: origins[0] };
+    throw _e;
+  }
+  if (granted && typeof sender?.tab?.id === "number") {
+    try {
+      await chrome.tabs.reload(sender.tab.id);
+    } catch (_e) {}
+  }
   return { ok: true, authorized: granted, origin, origin_pattern: origins[0] };
 }
 

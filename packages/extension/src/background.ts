@@ -48,7 +48,7 @@ type ChromeTabsLike = Readonly<{
 
 export type ChromeMessageSender = {
   readonly url?: string;
-  readonly tab?: { readonly url?: string };
+  readonly tab?: { readonly id?: number; readonly url?: string };
 };
 
 export type AuthorizationDecision =
@@ -135,6 +135,34 @@ export async function request_origin_authorization(
       : { ...decision, authorized: false, error: "Origin permission request was denied" };
   } catch (error) {
     return { ok: false, authorized: false, error: error_message(error), origin: decision.origin };
+  }
+}
+
+export async function request_origin_authorization_from_user_gesture(
+  message: unknown,
+  sender: ChromeMessageSender,
+  contains: OriginPermissionProbe,
+  request: OriginPermissionProbe,
+  reload_tab?: (tab_id: number) => Promise<void>,
+): Promise<AuthorizationDecision> {
+  const origin = origin_from_message_or_sender(message, sender);
+  if (origin === undefined) return { ok: false, authorized: false, error: "No page origin available" };
+  const pattern = origin_permission_pattern(origin);
+  if (pattern === undefined) return { ok: false, authorized: false, error: `Unsupported page origin: ${origin}`, origin };
+
+  try {
+    const authorized = await request([pattern]);
+    if (authorized && sender.tab?.id !== undefined && reload_tab !== undefined) await reload_tab(sender.tab.id);
+    return authorized
+      ? { ok: true, authorized: true, origin, origin_pattern: pattern }
+      : { ok: true, authorized: false, origin, origin_pattern: pattern, error: "Origin permission request was denied" };
+  } catch (error) {
+    try {
+      if (await contains([pattern])) return { ok: true, authorized: true, origin, origin_pattern: pattern };
+    } catch {
+      // Keep the original permission-request error; contains() is only fallback.
+    }
+    return { ok: false, authorized: false, error: error_message(error), origin };
   }
 }
 
@@ -238,11 +266,12 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
     }
 
     if (message.type === MESSAGE_TYPES.REQUEST_ORIGIN_AUTH) {
-      void request_origin_authorization(
+      void request_origin_authorization_from_user_gesture(
         message,
         sender,
         (origins) => chrome_like.permissions.contains({ origins: [...origins] }),
         (origins) => chrome_like.permissions.request({ origins: [...origins] }),
+        chrome_like.tabs?.reload,
       ).then(sendResponse, (error) => sendResponse({ ok: false, authorized: false, error: error_message(error) }));
       return true;
     }

@@ -9,9 +9,9 @@
     const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
     if (document.getElementById(ROOT_ID)) return;
     const authorized = isAuthorizedOriginResponse(response);
-    // Inert auth marker stays authorized-only (unchanged security posture). The
-    // surface runtime loads in both states; when unauthorized it shows only the
-    // host-authorization CTA, which routes the grant to the browser action.
+    // Inert auth marker stays authorized-only. Unauthorized onboarding is shown
+    // only for local project candidates; ordinary public websites stay silent.
+    if (!authorized && !isLocalProjectCandidateOrigin(location.origin)) return;
     if (authorized) installContentRoot();
     loadSurfaceRuntime(authorized);
   }
@@ -61,6 +61,30 @@
 
   function isAuthorizedOriginResponse(value) {
     return Boolean(value && value.ok === true && value.authorized === true);
+  }
+
+  function isLocalProjectCandidateOrigin(origin) {
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+      return isLocalProjectCandidateHostname(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function isLocalProjectCandidateHostname(hostname) {
+    const host = hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost")) return true;
+    if (host === "host.docker.internal" || host.endsWith(".local")) return true;
+    if (host === "::1" || host === "[::1]") return true;
+
+    const parts = host.split(".");
+    if (parts.length !== 4) return false;
+    const nums = parts.map((part) => Number(part));
+    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+    const [a, b] = nums;
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
   }
 
   function runtimeMessage(message) {

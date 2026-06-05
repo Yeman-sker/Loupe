@@ -66,6 +66,29 @@ export function origin_permission_pattern(origin: string): string | undefined {
   return `${url.protocol}//${url.host}/*`;
 }
 
+export function is_local_project_candidate_origin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return is_local_project_candidate_hostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function is_local_project_candidate_hostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "host.docker.internal" || host.endsWith(".local")) return true;
+  if (host === "::1" || host === "[::1]") return true;
+
+  const parts = host.split(".");
+  if (parts.length !== 4) return false;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = nums as [number, number, number, number];
+  return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+}
 
 export function can_inject_content_root(authorization_state?: ContentHostAuthorizationState): boolean {
   return authorization_state?.authorized === true;
