@@ -86,34 +86,66 @@ const SURFACES_CSS = `
   overflow:hidden;text-overflow:ellipsis}
 
 /* Intent panel */
-.lp-intent{position:absolute;pointer-events:auto;z-index:2}
-.lp-intent-shell{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.lp-intent{position:absolute;pointer-events:auto;z-index:2;width:380px;max-width:92vw}
+.lp-intent-shell{background:var(--surface);border:var(--hair) solid var(--hairline-2);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-pop);padding:11px 11px 9px;
+  transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease),opacity var(--dur) var(--ease)}
+.lp-intent-shell:focus-within{border-color:color-mix(in srgb,var(--iris) 50%,var(--hairline-2));box-shadow:var(--shadow-pop),var(--ring)}
 .lp-intent-pip{display:inline-block;width:6px;height:6px;border-radius:50%;
   background:var(--iris);flex-shrink:0;margin-right:5px}
 .lp-intent-targ{display:flex;align-items:center;font-size:10.5px;color:var(--ink-3);
-  font-family:var(--mono)}
-.lp-intent-row{display:flex;align-items:flex-start;gap:8px}
-.lp-intent-field{flex:1;min-height:54px;max-height:88px;resize:none;
-  font:400 13.5px/1.5 var(--font);color:var(--ink);
-  background:var(--field);border:var(--hair) solid var(--field-line);
-  border-radius:var(--r-md);padding:8px 10px;letter-spacing:-.006em;
-  outline:none;transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
-.lp-intent-field:focus{border-color:var(--iris);box-shadow:var(--ring)}
-.lp-intent-submit{width:33px;height:33px;flex-shrink:0;
-  border-radius:var(--r-pin);border:none;cursor:pointer;
-  background:var(--k,var(--iris));color:var(--iris-fg);
-  display:inline-flex;align-items:center;justify-content:center;
-  transition:transform var(--dur-fast) var(--ease),background var(--dur) var(--ease)}
-.lp-intent-submit:hover:not([disabled]){transform:translateY(-1px)}
-.lp-intent-submit[disabled]{opacity:.38;cursor:not-allowed}
-.lp-kindrail{display:flex;align-items:center;gap:5px;padding-top:2px}
-.lp-kindrail-label{font-size:9.5px;color:var(--ink-3);letter-spacing:.03em;
-  text-transform:uppercase;font-family:var(--mono);margin-right:3px}
-.lp-kind-btn{width:14px;height:14px;border-radius:50%;border:none;cursor:pointer;
-  background:var(--k,var(--iris-veil));padding:0;
-  transition:transform var(--dur-fast) var(--ease),box-shadow var(--dur) var(--ease)}
-.lp-kind-btn:hover{transform:scale(1.25)}
-.lp-kind-btn--sel{box-shadow:0 0 0 2.5px color-mix(in srgb,var(--k,var(--iris)) 28%,transparent)}
+  font-family:var(--mono);padding:1px 4px 8px;letter-spacing:.01em}
+.lp-intent-row{display:flex;align-items:flex-end;gap:9px}
+.lp-intent-field{flex:1;resize:none;overflow-y:hidden;border:none;outline:none;
+  background:transparent;color:var(--ink);font:400 14px/1.5 var(--font);
+  min-height:22px;max-height:88px;padding:5px 4px;letter-spacing:-.006em}
+.lp-intent-field::placeholder{color:var(--ink-3)}
+.lp-intent-submit{flex:none;width:33px;height:33px;border-radius:var(--r-pin);border:none;cursor:pointer;
+  display:grid;place-items:center;background:var(--k,var(--iris));color:var(--iris-fg);
+  box-shadow:0 1px 2px color-mix(in srgb,var(--k,var(--iris)) 40%,transparent),0 6px 16px -6px color-mix(in srgb,var(--k,var(--iris)) 50%,transparent);
+  transition:transform var(--dur-fast) var(--ease),box-shadow var(--dur) var(--ease),opacity var(--dur) var(--ease)}
+.lp-intent-submit:hover:not([disabled]){transform:translateY(-1px) scale(1.05)}
+.lp-intent-submit:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--k,var(--iris)) 32%,transparent)}
+.lp-intent-submit svg{width:15px;height:15px}
+.lp-intent-submit[disabled]{opacity:.34;cursor:not-allowed;transform:none;box-shadow:none;background:var(--ink-3)}
+.lp-kindrail{display:flex;align-items:center;gap:3px;margin-top:10px;padding-top:9px;
+  border-top:var(--hair) solid var(--hairline)}
+.lp-kindrail-label{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-3);margin-right:6px}
+.lp-kind-btn{appearance:none;cursor:pointer;border:none;background:transparent;padding:5px;
+  border-radius:999px;display:inline-flex;align-items:center;gap:0;
+  transition:gap var(--dur) var(--ease),background var(--dur) var(--ease),transform var(--dur-fast) var(--ease)}
+.lp-kind-btn::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--k,var(--iris));flex:none;
+  box-shadow:0 0 0 0 color-mix(in srgb,var(--k,var(--iris)) 30%,transparent);
+  transition:box-shadow var(--dur) var(--ease)}
+.lp-kind-btn:hover{background:var(--surface-2);transform:translateY(-1px)}
+.lp-kind-name{max-width:0;overflow:hidden;white-space:nowrap;font:600 11px/1 var(--font);
+  color:var(--ink);opacity:0;
+  transition:max-width var(--dur) var(--ease),opacity var(--dur) var(--ease),margin var(--dur) var(--ease)}
+.lp-kind-btn:hover .lp-kind-name,.lp-kind-btn--sel .lp-kind-name{max-width:80px;opacity:1;margin-left:6px;margin-right:2px}
+.lp-kind-btn--sel{background:color-mix(in srgb,var(--k,var(--iris)) 13%,transparent)}
+.lp-kind-btn--sel::before{box-shadow:0 0 0 3px color-mix(in srgb,var(--k,var(--iris)) 22%,transparent)}
+.lp-kind-btn:focus-visible{outline:none;box-shadow:var(--ring)}
+/* hint, discard, error */
+.lp-intent-hint{margin:6px 3px 1px;font:600 11px/1.3 var(--font);color:var(--t-bad);display:none}
+.lp-intent.lp-show-hint .lp-intent-hint{display:block;animation:lp-shake .3s var(--ease)}
+@keyframes lp-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+.lp-intent-discard{margin:6px 3px 1px;font:600 11px/1.3 var(--font);color:var(--ink-2);display:none}
+.lp-intent-error{margin:6px 3px 1px;font:600 11px/1.3 var(--font);color:var(--t-bad);display:none}
+/* footer */
+.lp-intent-foot{display:flex;align-items:center;margin-top:8px;padding:0 2px}
+.lp-hintkey{font:500 10.5px/1 var(--mono);color:var(--ink-3);margin-left:auto}
+/* collapse-to-pin animation */
+@keyframes lp-collapse-to-pin{0%{opacity:1;transform:scale(1)}60%{opacity:.5}100%{opacity:0;transform:scale(.7) translateY(8px)}}
+.lp-intent.lp-collapsing .lp-intent-shell{animation:lp-collapse-to-pin var(--dur-slow) var(--ease) forwards;transform-origin:var(--ox,100%) 0;pointer-events:none}
+/* add-another button */
+.lp-add-another{display:inline-flex;align-items:center;gap:7px;font:600 11.5px/1 var(--font);
+  color:var(--ink-2);background:var(--surface);border:var(--hair) dashed var(--hairline-strong);
+  border-radius:999px;padding:8px 13px;cursor:pointer;box-shadow:var(--shadow);
+  animation:pop-in var(--dur) var(--ease-out) both;pointer-events:auto;
+  transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+.lp-add-another:hover{color:var(--ink);border-color:var(--iris);background:var(--iris-veil-2)}
+.lp-add-another-x{font:700 13px/1 var(--mono);color:var(--iris)}
 
 /* Breadcrumb */
 .lp-breadcrumb{position:absolute;display:inline-flex;align-items:center;gap:5px;
@@ -167,7 +199,9 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let currentPicker: Picker | null = null;
   let detachReady: (() => void) | null = null;
   let detachIntent: (() => void) | null = null;
+  let detachAddAnother: (() => void) | null = null;
   const pinDetachers: Array<() => void> = [];
+  let prevIntentFocus: Element | null = null;
 
   function clearSurfaces(): void {
     if (currentPicker !== null) {
@@ -181,6 +215,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     if (detachIntent !== null) {
       detachIntent();
       detachIntent = null;
+    }
+    if (detachAddAnother !== null) {
+      detachAddAnother();
+      detachAddAnother = null;
     }
     for (const d of pinDetachers) d();
     pinDetachers.length = 0;
@@ -223,6 +261,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
     // Intent panel
     if (state.intent !== null) {
+      prevIntentFocus = doc.activeElement;
       const view = doc.defaultView;
       const viewport: Viewport = {
         width: view?.innerWidth ?? 1024,
@@ -230,11 +269,14 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         scrollY: view?.scrollY ?? 0,
       };
       const intentEl = renderIntent(host.dom, t, state.intent.rect, viewport, {
-        onSave: (comment, kind) => {
-          void doSave(state.intent!.element, comment, kind);
+        onSave: async (comment, kind) => {
+          await doSave(state.intent!.element, comment, kind);
         },
         onCancel: () => {
           state.intent = null;
+          if (prevIntentFocus !== null && typeof (prevIntentFocus as HTMLElement).focus === "function") {
+            (prevIntentFocus as HTMLElement).focus();
+          }
           render();
         },
       });
@@ -259,48 +301,90 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   }
 
   async function doSave(element: Element, comment: string, kind: IntentKind): Promise<void> {
-    try {
-      const doc = opts.document;
-      const project = project_scope_from_url({ url: doc.location.href, title: doc.title });
-      const locator = capture_locator(element);
-      const resolution = resolve(locator, doc);
-      const context = buildContext(element, doc);
-      const now = new Date().toISOString();
-      const draft: AnnotationDraft = {
-        id: crypto.randomUUID(),
-        project,
-        locator,
-        resolution,
-        comment,
-        intent_kind: kind,
-        context,
-        now,
-      };
-      const annotation = create_annotation(draft);
-      const key = session_marks_key(project.project_id, project.session_id);
+    const doc = opts.document;
+    const project = project_scope_from_url({ url: doc.location.href, title: doc.title });
+    const locator = capture_locator(element);
+    const resolution = resolve(locator, doc);
+    const context = buildContext(element, doc);
+    const now = new Date().toISOString();
+    const draft: AnnotationDraft = {
+      id: crypto.randomUUID(),
+      project,
+      locator,
+      resolution,
+      comment,
+      intent_kind: kind,
+      context,
+      now,
+    };
+    const annotation = create_annotation(draft);
+    const key = session_marks_key(project.project_id, project.session_id);
 
-      if (opts.storage !== undefined) {
-        const stored = await opts.storage.get(key);
-        const existing = stored[key];
-        const arr: unknown[] = Array.isArray(existing) ? (existing as unknown[]) : [];
-        await opts.storage.set({ [key]: [...arr, annotation] });
-      }
-
-      // Capture pin position before clearing intent
-      const rect = state.intent?.rect ?? element.getBoundingClientRect();
-      state.markCount += 1;
-      state.pins.push({
-        id: annotation.id,
-        num: state.markCount,
-        element,
-        rect,
-        kind,
-      });
-      state.intent = null;
-      render();
-    } catch {
-      // Local-only save failure is non-fatal; intent panel stays open
+    if (opts.storage !== undefined) {
+      const stored = await opts.storage.get(key);
+      const existing = stored[key];
+      const arr: unknown[] = Array.isArray(existing) ? (existing as unknown[]) : [];
+      // Throws on storage failure → surface-intent shows inline error
+      await opts.storage.set({ [key]: [...arr, annotation] });
     }
+
+    // Capture pin position before clearing intent
+    const rect = state.intent?.rect ?? element.getBoundingClientRect();
+    state.markCount += 1;
+    const pinRecord = {
+      id: annotation.id,
+      num: state.markCount,
+      element,
+      rect,
+      kind,
+    };
+    state.pins.push(pinRecord);
+    state.intent = null;
+    render();
+
+    // Show "Add another" near the new pin
+    showAddAnother(rect);
+  }
+
+  function showAddAnother(pinRect: DOMRect): void {
+    const { t } = i18n;
+    const doc = opts.document;
+    const view = doc.defaultView;
+    const scrollY = view?.scrollY ?? 0;
+    const vw = view?.innerWidth ?? 1024;
+    const vh = view?.innerHeight ?? 768;
+
+    const btn = host.dom.el("button", { class: "lp-add-another" }, [
+      host.dom.el("span", { class: "lp-add-another-x", text: "+" }),
+      host.dom.el("span", { text: t("intent.add") }),
+    ]);
+
+    const PAD = 8;
+    const PANEL_WIDTH = 200;
+    const left = Math.max(PAD, Math.min(pinRect.left + scrollY, vw - PANEL_WIDTH - PAD));
+    const top = pinRect.top + scrollY + pinRect.height + PAD;
+
+    btn.style.position = "absolute";
+    btn.style.top = `${top}px`;
+    btn.style.left = `${left}px`;
+
+    btn.addEventListener("click", () => {
+      if (detachAddAnother !== null) { detachAddAnother(); detachAddAnother = null; }
+      startPicking();
+    });
+
+    // Auto-dismiss after 4s
+    const timer = setTimeout(() => {
+      if (detachAddAnother !== null) { detachAddAnother(); detachAddAnother = null; }
+    }, 4000);
+
+    const origDetach = host.mount(btn);
+    detachAddAnother = () => {
+      clearTimeout(timer);
+      origDetach();
+    };
+
+    void vw; void vh;
   }
 
   // ⌥L global toggle: start / stop picking from anywhere on the page
