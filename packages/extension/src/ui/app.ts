@@ -30,6 +30,7 @@ import { renderViewAll } from "./surface-view-all.js";
 import { renderProjectChooser } from "./surface-project-chooser.js";
 import { renderFallback } from "./surface-fallback.js";
 import { renderHostAuth } from "./surface-host-auth.js";
+import { renderStatusBar, type StatusModel } from "./surface-status-bar.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -49,6 +50,10 @@ export type MountOptions = {
 
 export type SurfaceApp = {
   unmount: () => void;
+  // Toggled by the toolbar action (via the content script) on an authorized
+  // page. No-op on unauthorized origins, where the toolbar click still grants
+  // host permission instead.
+  toggleStatusBar: () => void;
 };
 
 const PREFS_KEY = "loupe:v1:ui:prefs";
@@ -73,6 +78,7 @@ type AppState = {
   daemonOnline: boolean;
   showProjectChooser: boolean;
   showFallback: boolean;
+  showStatusBar: boolean;
   projects: ProjectEntry[];
   selectedProject: string | null;
 };
@@ -344,6 +350,26 @@ const SURFACES_CSS = `
 .fallback p{font-size:12px;line-height:1.5;color:var(--ink-2);margin:0 0 13px}
 .fallback .fb-row{display:flex;align-items:center;gap:11px}
 
+/* Floating daemon status bar — toolbar-toggled strip, bottom-center */
+.lp-status{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+  max-width:92vw;padding:11px 13px;z-index:7;pointer-events:auto;
+  display:flex;flex-direction:column;gap:9px;animation:pop-in var(--dur) var(--ease-out) both}
+.lp-status-row{display:flex;align-items:center;gap:12px}
+.lp-status-meta{font:500 10.5px/1 var(--mono);color:var(--ink-3);white-space:nowrap}
+.lp-status-meta:empty{display:none}
+.lp-status-btn{padding:7px 11px;font-size:11.5px}
+.lp-status-x{margin-left:2px;width:26px;height:26px;flex:none;border:none;background:transparent;
+  color:var(--ink-3);cursor:pointer;border-radius:var(--r-sm);font-size:17px;line-height:1;
+  display:grid;place-items:center;transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+.lp-status-x:hover{background:var(--surface-2);color:var(--ink)}
+.lp-status-x:focus-visible{outline:none;box-shadow:var(--ring)}
+.lp-status-guide{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  padding-top:9px;border-top:var(--hair) solid var(--hairline);
+  font:500 11.5px/1.4 var(--font);color:var(--ink-2)}
+.lp-status-path{font:500 10.5px/1 var(--mono);color:var(--ink-3);
+  background:color-mix(in srgb,var(--ink) 6%,transparent);
+  border:var(--hair) solid var(--hairline);border-radius:5px;padding:3px 6px}
+
 /* Reduced motion (§5/§8/§12). The token media query collapses --dur* to .001s,
    which would (a) teleport the selection frame instead of preserving spatial
    continuity, and (b) NOT stop the two infinite ambient loops (they use literal
@@ -357,7 +383,7 @@ const SURFACES_CSS = `
 `;
 
 export async function mount(opts: MountOptions): Promise<SurfaceApp> {
-  if (opts.document.getElementById(SURFACE_ROOT_ID) !== null) return { unmount: () => {} };
+  if (opts.document.getElementById(SURFACE_ROOT_ID) !== null) return { unmount: () => {}, toggleStatusBar: () => {} };
 
   const prefs = await readPrefs(opts.storage, opts.document);
   const i18n = createI18n(prefs.lang);
@@ -382,6 +408,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     daemonOnline: true,
     showProjectChooser: false,
     showFallback: false,
+    showStatusBar: false,
     projects: [],
     selectedProject: null,
   };
@@ -398,6 +425,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachChooser: (() => void) | null = null;
   let detachFallback: (() => void) | null = null;
   let detachHostAuth: (() => void) | null = null;
+  let detachStatusBar: (() => void) | null = null;
   const pinDetachers: Array<() => void> = [];
   let prevIntentFocus: Element | null = null;
 
@@ -437,6 +465,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     if (detachHostAuth !== null) {
       detachHostAuth();
       detachHostAuth = null;
+    }
+    if (detachStatusBar !== null) {
+      detachStatusBar();
+      detachStatusBar = null;
     }
     for (const d of pinDetachers) d();
     pinDetachers.length = 0;
@@ -583,6 +615,23 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         onCopy: () => doCopyAll(),
       });
       detachFallback = host.mount(fallbackEl);
+    }
+
+    // Floating daemon status bar — toggled by the toolbar action.
+    if (state.showStatusBar) {
+      const statusEl = renderStatusBar(host.dom, {
+        t,
+        model: statusModel(),
+        onRetry: () => {
+          void probe_daemon_health().then((online) => {
+            state.daemonOnline = online;
+            render();
+          });
+        },
+        onCopy: () => doCopyAll(),
+        onClose: () => { state.showStatusBar = false; render(); },
+      });
+      detachStatusBar = host.mount(statusEl);
     }
 
     // Pins — group by element to compute stacking offsets
@@ -776,6 +825,32 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
   }
 
+  // Derive the status-bar model from signals the UI already holds. The UI never
+  // sees the daemon token (exposes_token_to_page:false), so "token missing" is
+  // only emitted when a future background signal sets it; today we distinguish
+  // offline / sync-failed / local-only / connected from daemon health + pins.
+  function statusModel(): StatusModel {
+    const synced = state.pins.filter((p) => p.sync === "synced").length;
+    const pending = state.pins.filter((p) => p.sync === "local" || p.sync === "failed").length;
+    const failed = state.pins.some((p) => p.sync === "failed");
+    const kind: StatusModel["kind"] = !state.daemonOnline
+      ? "offline"
+      : failed
+        ? "sync_failed"
+        : pending > 0
+          ? "local_only"
+          : "connected";
+    const model: StatusModel = { kind, syncedCount: synced, pendingCount: pending };
+    if (kind === "offline") model.tokenPath = "~/.loupe/token";
+    return model;
+  }
+
+  function toggleStatusBar(): void {
+    if (!state.authorized) return;
+    state.showStatusBar = !state.showStatusBar;
+    render();
+  }
+
   function buildProjectFromPin(pin: PinRecord): { project_id: string; session_id: string } | null {
     const annotation = annotations.get(pin.id);
     if (annotation !== undefined) return annotation.project;
@@ -922,6 +997,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       clearSurfaces();
       host.destroy();
     },
+    toggleStatusBar,
   };
 
   render();

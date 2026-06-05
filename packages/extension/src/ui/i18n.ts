@@ -75,6 +75,17 @@ const DICT: Dict = {
   "fb.copy": ["复制 Markdown", "Copy Markdown"],
   "fb.retry": ["重试", "Retry"],
 
+  "status.title": ["Loupe 状态", "Loupe status"],
+  "status.connected": ["已连接", "connected"],
+  "status.offline": ["守护进程离线", "daemon offline"],
+  "status.tokenMissing": ["令牌缺失", "token missing"],
+  "status.syncFailed": ["同步失败", "sync failed"],
+  "status.localOnly": ["仅本地保存", "saved locally"],
+  "status.retry": ["重试", "Retry"],
+  "status.copy": ["复制 Markdown", "Copy Markdown"],
+  "status.init": ["运行 `loupe init` 修复", "Run `loupe init` to repair"],
+  "status.close": ["关闭", "Close"],
+
   "ui.theme": ["主题", "Theme"],
   "ui.lang": ["语言", "Language"],
 };

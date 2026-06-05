@@ -2,6 +2,8 @@ const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
+  TOGGLE_STATUS_BAR: "loupe.status_bar.toggle",
+  CONTENT_PROBE: "loupe.content.probe",
 });
 
 const LOUPE_AUTH_SCHEME = "Bearer";
@@ -14,33 +16,98 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Toolbar action is the host-permission grant entry point. action.onClicked is a
-// valid MV3 user gesture (unlike a content-script message), so permissions.request
-// works here. On grant we reload the tab so the content script re-runs authorized.
+// The toolbar action is state-aware (ADP local-project-gated onboarding):
+//   - On an already-authorized origin it TOGGLES the in-page floating status
+//     bar — the toolbar click is no longer the host-permission CTA.
+//   - On an un-granted origin it requests host permission, kept purely as the
+//     MV3 grant fallback (action.onClicked is a valid user gesture, unlike a
+//     content-script-relayed message).
+// We mirror granted origin patterns into an in-memory set so onClicked can
+// branch SYNCHRONOUSLY: awaiting permissions.contains() first would consume the
+// transient user gesture and make a later permissions.request() silently fail.
+const authorizedOriginPatterns = new Set();
+
+void seedAuthorizedOrigins();
+if (chrome.permissions && chrome.permissions.onAdded && chrome.permissions.onAdded.addListener) {
+  chrome.permissions.onAdded.addListener((p) => addOriginPatterns(p && p.origins));
+}
+if (chrome.permissions && chrome.permissions.onRemoved && chrome.permissions.onRemoved.addListener) {
+  chrome.permissions.onRemoved.addListener((p) => removeOriginPatterns(p && p.origins));
+}
+
 if (chrome.action && chrome.action.onClicked) {
   chrome.action.onClicked.addListener((tab) => {
-    void handleActionClick(tab).catch(() => {});
+    handleActionClick(tab);
   });
 }
 
-async function handleActionClick(tab) {
+function handleActionClick(tab) {
   const origin = tabOrigin(tab);
   if (!origin) return;
-  const origins = [originPattern(origin)];
-  // permissions.request must be the first permission API called from the
-  // browser-action gesture. Awaiting permissions.contains first can consume the
-  // transient user gesture, so Chrome rejects the request and no prompt appears.
-  let granted = false;
-  try {
-    granted = await chrome.permissions.request({ origins });
-  } catch (_e) {
+  const pattern = originPattern(origin);
+
+  if (authorizedOriginPatterns.has(pattern)) {
+    void toggleStatusBar(tab);
     return;
   }
-  if (granted && typeof tab?.id === "number") {
+
+  // Not known-authorized → request the grant. This must be the first permission
+  // API touched in the gesture, so do not await anything before it.
+  chrome.permissions
+    .request({ origins: [pattern] })
+    .then(async (granted) => {
+      if (!granted) return;
+      authorizedOriginPatterns.add(pattern);
+      // Cold SW start can miss a real grant in the cache above; if Loupe is
+      // already running on the page, toggle instead of a spurious reload.
+      const mounted = await probeContent(tab);
+      if (mounted) await toggleStatusBar(tab);
+      else if (typeof tab?.id === "number") await chrome.tabs.reload(tab.id).catch(() => {});
+    })
+    .catch(() => {});
+}
+
+async function seedAuthorizedOrigins() {
+  try {
+    const all = await chrome.permissions.getAll();
+    addOriginPatterns(all && all.origins);
+  } catch (_e) {}
+}
+
+function addOriginPatterns(origins) {
+  if (Array.isArray(origins)) for (const o of origins) authorizedOriginPatterns.add(o);
+}
+
+function removeOriginPatterns(origins) {
+  if (Array.isArray(origins)) for (const o of origins) authorizedOriginPatterns.delete(o);
+}
+
+function toggleStatusBar(tab) {
+  if (typeof tab?.id !== "number") return Promise.resolve();
+  return sendTabMessage(tab.id, { type: MESSAGE_TYPES.TOGGLE_STATUS_BAR });
+}
+
+function probeContent(tab) {
+  if (typeof tab?.id !== "number") return Promise.resolve(false);
+  return sendTabMessage(tab.id, { type: MESSAGE_TYPES.CONTENT_PROBE }).then(
+    (resp) => Boolean(resp && resp.mounted),
+  );
+}
+
+function sendTabMessage(tabId, message) {
+  return new Promise((resolve) => {
     try {
-      await chrome.tabs.reload(tab.id);
-    } catch (_e) {}
-  }
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve(undefined);
+          return;
+        }
+        resolve(response);
+      });
+    } catch (_e) {
+      resolve(undefined);
+    }
+  });
 }
 
 function tabOrigin(tab) {

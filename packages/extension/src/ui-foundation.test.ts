@@ -322,4 +322,27 @@ describe("UI-1 · surface host mount → update → unmount", () => {
     notNow.dispatch("click");
     assert.equal(elementChildren(wrapper).length, 0, "CTA dismissed, nothing else shown");
   });
+
+  it("toggleStatusBar shows then hides the floating daemon status bar on an authorized page", async () => {
+    const { doc, asDocument } = makeFakeDocument();
+    const { storage } = makeFakeStorage();
+
+    const app = await mount({ baseUrl: "chrome-extension://x/", document: asDocument, storage });
+    const shadow = present(present(doc.getElementById(SURFACE_ROOT_ID) ?? undefined).shadow ?? undefined);
+    const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
+
+    // Hidden by default — the toolbar action toggles it.
+    assert.equal(descendants(wrapper).some((e) => hasClass(e, "lp-status")), false, "status bar hidden until toggled");
+
+    app.toggleStatusBar();
+    const bar = present(descendants(wrapper).find((e) => hasClass(e, "lp-status")));
+    assert.ok(hasClass(bar, "card"), "status bar uses the card primitive");
+    assert.equal(bar.getAttribute("role"), "status");
+    // No marks + daemon healthy (default) → connected head token (zh label).
+    assert.ok(descendants(bar).some((e) => hasClass(e, "tok--good")), "connected uses the good token class");
+    assert.ok(descendants(bar).some((e) => e.textContent === "已连接"), "connected label rendered");
+
+    app.toggleStatusBar();
+    assert.equal(descendants(wrapper).some((e) => hasClass(e, "lp-status")), false, "status bar hidden after second toggle");
+  });
 });

@@ -7,7 +7,7 @@
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "host_permissions": [],
   "action": {
-    "default_title": "Authorize Loupe on this page"
+    "default_title": "Loupe"
   },
   "background": {
     "service_worker": "src/background.js",

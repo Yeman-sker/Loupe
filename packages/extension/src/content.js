@@ -1,9 +1,37 @@
 (() => {
   const ROOT_ID = "loupe-extension-root";
   const MESSAGE_GET_AUTH = "loupe.origin_auth.get";
+  const MESSAGE_TOGGLE_STATUS = "loupe.status_bar.toggle";
+  const MESSAGE_PROBE = "loupe.content.probe";
+
+  // Holds the mounted surface app so action messages from the service worker
+  // can drive it (status-bar toggle). No in-page interaction lives here.
+  let mountedApp = null;
 
   if (!canBootstrapContentRuntime() || document.getElementById(ROOT_ID)) return;
+  installActionMessageListener();
   void bootstrapAuthorizedContent();
+
+  function installActionMessageListener() {
+    if (typeof chrome?.runtime?.onMessage?.addListener !== "function") return;
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message || typeof message.type !== "string") return false;
+      if (message.type === MESSAGE_PROBE) {
+        sendResponse({ mounted: mountedApp !== null });
+        return false;
+      }
+      if (message.type === MESSAGE_TOGGLE_STATUS) {
+        if (mountedApp !== null && typeof mountedApp.toggleStatusBar === "function") {
+          mountedApp.toggleStatusBar();
+          sendResponse({ ok: true, mounted: true });
+        } else {
+          sendResponse({ ok: false, mounted: false });
+        }
+        return false;
+      }
+      return false;
+    });
+  }
 
   async function bootstrapAuthorizedContent() {
     const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
@@ -21,6 +49,7 @@
     try {
       void import(chrome.runtime.getURL("dist/ui/app.js"))
         .then((mod) => mod.mount({ baseUrl: chrome.runtime.getURL(""), document, storage: chrome.storage && chrome.storage.local, authorized }))
+        .then((app) => { mountedApp = app; })
         .catch(() => {});
     } catch (_e) {}
   }
