@@ -34,7 +34,10 @@ export function renderFallback(dom: Dom, opts: FallbackOpts): HTMLElement {
     dom.el("span", { text: t("fb.title") }),
   ]);
 
-  return dom.el("div", { class: "fallback card" }, [
+  return dom.el("div", {
+    class: "fallback card",
+    attrs: { role: "status", "aria-live": "polite" },
+  }, [
     h4,
     dom.el("p", { text: t("fb.body") }),
     dom.el("div", { class: "fb-row" }, [copyBtn, localTok]),

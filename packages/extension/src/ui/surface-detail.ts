@@ -93,7 +93,7 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
   const el = dom.el("div", {
     class: cls,
     data: { kind: pin.kind },
-    attrs: { role: "dialog", "aria-label": `Mark ${pin.num}` },
+    attrs: { role: "dialog", "aria-label": `Mark ${pin.num}`, tabindex: "-1" },
   }, [targetEl, commentEl, metaEl, actionsEl]);
 
   // Mark done
@@ -166,6 +166,10 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
       else opts.onClose();
     }
   });
+
+  // Focus the dialog on open so keyboard users land inside it and Esc works
+  // without a prior click. Runs after mount via the macrotask queue.
+  setTimeout(() => { el.focus(); }, 0);
 
   return el;
 }

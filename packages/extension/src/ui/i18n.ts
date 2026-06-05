@@ -25,6 +25,7 @@ const DICT: Dict = {
   "intent.kind": ["类别", "KIND"],
   "intent.save": ["保存 · ⌘↵", "Save · ⌘↵"],
   "intent.savea": ["保存 mark", "Save mark"],
+  "intent.commenta": ["给 agent 的任务", "Task for the agent"],
   "intent.add": ["再标一个", "Add another"],
   "intent.discard": ["再按一次 Esc 丢弃", "Press Esc again to discard"],
 

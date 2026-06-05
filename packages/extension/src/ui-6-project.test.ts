@@ -42,12 +42,14 @@ class FakeEl {
   private readonly _listeners = new Map<string, Listener[]>();
   children: FakeEl[] = [];
   id = "";
+  focusCalled = false;
 
   constructor(tag: string) { this.tagName = tag.toUpperCase(); }
 
   setAttribute(k: string, v: string): void { this.attributes.set(k, v); }
   getAttribute(k: string): string | null { return this.attributes.get(k) ?? null; }
   removeAttribute(k: string): void { this.attributes.delete(k); }
+  focus(): void { this.focusCalled = true; }
 
   addEventListener(type: string, listener: Listener): void {
     const arr = this._listeners.get(type) ?? [];
@@ -265,6 +267,94 @@ describe("UI-6 · Project chooser — Surface 2", () => {
   });
 });
 
+describe("UI-7 · Project chooser keyboard (radiogroup) — Surface 2", () => {
+  const key = (k: string): Record<string, unknown> => ({ key: k, preventDefault() {} });
+
+  it("list is a radiogroup and items are radios", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const group = findByClass(el, "proj-list")!;
+    assert.equal(group.getAttribute("role"), "radiogroup");
+    const items = findAllByClass(el, "proj");
+    assert.ok(items.every((it) => it.getAttribute("role") === "radio"), "each project is a radio");
+  });
+
+  it("default selection is checked and the only tab stop (roving tabindex)", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    assert.equal(items[0]!.getAttribute("aria-checked"), "true");
+    assert.equal(items[0]!.getAttribute("tabindex"), "0");
+    assert.equal(items[1]!.getAttribute("aria-checked"), "false");
+    assert.equal(items[1]!.getAttribute("tabindex"), "-1");
+  });
+
+  it("ArrowDown moves selection, aria-checked, roving tabindex, and focus", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    items[0]!.dispatch("keydown", key("ArrowDown"));
+    assert.ok(items[1]!.classList.contains("sel"), "second item selected");
+    assert.equal(items[1]!.getAttribute("aria-checked"), "true");
+    assert.equal(items[1]!.getAttribute("tabindex"), "0");
+    assert.equal(items[0]!.getAttribute("aria-checked"), "false");
+    assert.equal(items[0]!.getAttribute("tabindex"), "-1");
+    assert.ok(items[1]!.focusCalled, "focus moved to the newly selected radio");
+  });
+
+  it("ArrowDown wraps from last to first", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    items[1]!.dispatch("keydown", key("ArrowDown")); // from last → wraps to first
+    assert.ok(items[0]!.classList.contains("sel"), "wrapped to first");
+    assert.ok(items[0]!.focusCalled);
+  });
+
+  it("ArrowUp wraps from first to last", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    items[0]!.dispatch("keydown", key("ArrowUp")); // from first → wraps to last
+    assert.ok(items[1]!.classList.contains("sel"), "wrapped to last");
+  });
+
+  it("Enter on a radio confirms the focused project", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    let picked: string | null = null;
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: (id) => { picked = id; } }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    items[0]!.dispatch("keydown", key("ArrowDown")); // move selection to marketing
+    items[1]!.dispatch("keydown", key("Enter"));
+    assert.equal(picked, "marketing");
+  });
+
+  it("Space on a radio confirms the focused project", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    let picked: string | null = null;
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: (id) => { picked = id; } }) as unknown as FE;
+    const items = findAllByClass(el, "proj");
+    items[0]!.dispatch("keydown", key(" "));
+    assert.equal(picked, "app-web"); // default selection
+  });
+
+  it("chooser card is a labeled dialog", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderProjectChooser(dom, PROJECTS, { t, onPick: () => {} }) as unknown as FE;
+    const card = findByClass(el, "chooser")!;
+    assert.equal(card.getAttribute("role"), "dialog");
+    assert.ok((card.getAttribute("aria-label") ?? "").length > 0, "dialog has a label");
+  });
+});
+
 describe("UI-6 · Page-level fallback — Surface 8", () => {
   it("renders fallback title, body, and copy button", () => {
     const { dom } = makeDom();
@@ -281,6 +371,14 @@ describe("UI-6 · Page-level fallback — Surface 8", () => {
     // copy button
     const copyBtn = findButton(el, t("fb.copy"));
     assert.ok(copyBtn !== undefined, "copy button should exist");
+  });
+
+  it("root is a polite live region so the local-only state is announced", () => {
+    const { dom } = makeDom();
+    const { t } = createI18n("zh");
+    const el = renderFallback(dom, { t, onCopy: async () => true }) as unknown as FE;
+    assert.equal(el.getAttribute("role"), "status", "fallback announces as a status region");
+    assert.equal(el.getAttribute("aria-live"), "polite", "non-alarming polite announcement (not alert)");
   });
 
   it("copy button shows local token alongside it", () => {

@@ -41,12 +41,14 @@ class FakeEl {
   private readonly _listeners = new Map<string, Listener[]>();
   children: FakeEl[] = [];
   id = "";
+  focusCalled = false;
 
   constructor(tag: string) { this.tagName = tag.toUpperCase(); }
 
   setAttribute(k: string, v: string): void { this.attributes.set(k, v); }
   getAttribute(k: string): string | null { return this.attributes.get(k) ?? null; }
   removeAttribute(k: string): void { this.attributes.delete(k); }
+  focus(): void { this.focusCalled = true; }
 
   addEventListener(type: string, listener: Listener): void {
     const arr = this._listeners.get(type) ?? [];
@@ -150,6 +152,16 @@ describe("UI-5 · surface-detail", () => {
       }) as unknown as FakeEl;
       assert.ok(el.classList.contains("detail"), "has detail class");
       assert.ok(el.classList.contains("card"), "has card class");
+    });
+
+    it("dialog is focusable (tabindex=-1) so Esc works when opened", () => {
+      const { dom } = makeDom();
+      const el = renderDetail(dom, makePin(), {
+        t, onDone: () => {}, onDelete: () => {}, onCopyMarkdown: () => Promise.resolve(true),
+        onClose: () => {}, onViewAll: () => {},
+      }) as unknown as FakeEl;
+      assert.equal(el.getAttribute("role"), "dialog", "is a dialog");
+      assert.equal(el.getAttribute("tabindex"), "-1", "dialog is programmatically focusable");
     });
 
     it("is-done class when pin.task is done", () => {
@@ -390,6 +402,47 @@ describe("UI-5 · surface-view-all", () => {
       item.dispatch("click");
       assert.ok(jumped !== null, "onJump called");
       assert.equal((jumped as PinRecord).id, "pin-j");
+    });
+  });
+
+  describe("keyboard a11y", () => {
+    const key = (k: string): Record<string, unknown> => ({ key: k, preventDefault() {} });
+
+    it("panel is a focusable dialog (tabindex=-1) so Esc works when opened", () => {
+      const { dom, created } = makeDom();
+      renderViewAll(dom, [], {
+        t, route: "/", currentId: null,
+        onClose: () => {}, onJump: () => {}, onCopyAll: () => Promise.resolve(true), onStartPicking: () => {},
+      });
+      const aside = created.find((e) => e.classList.contains("viewall"))!;
+      assert.equal(aside.getAttribute("role"), "dialog");
+      assert.equal(aside.getAttribute("tabindex"), "-1", "panel is programmatically focusable");
+    });
+
+    it("list items are keyboard-activable buttons", () => {
+      const { dom, created } = makeDom();
+      renderViewAll(dom, [makePin()], {
+        t, route: "/", currentId: null,
+        onClose: () => {}, onJump: () => {}, onCopyAll: () => Promise.resolve(true), onStartPicking: () => {},
+      });
+      const item = created.find((e) => e.classList.contains("va-item"))!;
+      assert.equal(item.getAttribute("role"), "button");
+      assert.equal(item.getAttribute("tabindex"), "0");
+    });
+
+    it("Enter and Space on an item jump to it", () => {
+      const { dom, created } = makeDom();
+      const jumped: string[] = [];
+      const pin = makePin({ id: "pin-k" });
+      renderViewAll(dom, [pin], {
+        t, route: "/", currentId: null,
+        onClose: () => {}, onJump: (p) => { jumped.push(p.id); },
+        onCopyAll: () => Promise.resolve(true), onStartPicking: () => {},
+      });
+      const item = created.find((e) => e.classList.contains("va-item"))!;
+      item.dispatch("keydown", key("Enter"));
+      item.dispatch("keydown", key(" "));
+      assert.deepEqual(jumped, ["pin-k", "pin-k"], "Enter and Space both jump");
     });
   });
 

@@ -220,6 +220,7 @@ const SURFACES_CSS = `
 .va-item::before{content:"";position:absolute;left:3px;top:11px;bottom:11px;width:2.5px;border-radius:2px;
   background:var(--k,var(--ink-3));opacity:.5;transition:opacity var(--dur) var(--ease),top var(--dur) var(--ease),bottom var(--dur) var(--ease)}
 .va-item:hover{background:var(--surface-2)}.va-item:hover::before{opacity:1;top:7px;bottom:7px}
+.va-item:focus-visible{outline:none;box-shadow:var(--ring)}
 .va-item.cur{background:var(--iris-veil-2)}
 .va-l1{display:flex;gap:8px;font-size:12.5px;font-weight:600;line-height:1.45;color:var(--ink);align-items:baseline}
 .va-n{font:700 12px/1.5 var(--mono);color:var(--ink-3);flex:none}
@@ -294,6 +295,7 @@ const SURFACES_CSS = `
 .proj{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:var(--r-md);cursor:pointer;
   border:var(--hair) solid transparent;transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease)}
 .proj:hover{background:var(--surface-2)}
+.proj:focus-visible{outline:none;box-shadow:var(--ring)}
 .proj.sel{border-color:color-mix(in srgb,var(--iris) 45%,var(--hairline));background:var(--iris-veil-2)}
 .proj .pdot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink-3);flex:none}
 .proj.sel .pdot{border-color:var(--iris);background:var(--iris)}
@@ -309,6 +311,17 @@ const SURFACES_CSS = `
 .fallback h4{font-size:13px;font-weight:600;margin:0 0 4px;display:flex;align-items:center;gap:8px}
 .fallback p{font-size:12px;line-height:1.5;color:var(--ink-2);margin:0 0 13px}
 .fallback .fb-row{display:flex;align-items:center;gap:11px}
+
+/* Reduced motion (§5/§8/§12). The token media query collapses --dur* to .001s,
+   which would (a) teleport the selection frame instead of preserving spatial
+   continuity, and (b) NOT stop the two infinite ambient loops (they use literal
+   durations, not tokens). Fix both, and drop the error micro-shake amplitude. */
+@media (prefers-reduced-motion:reduce){
+  .lp-frame{transition-duration:.09s}        /* still slides between rects, just faster */
+  .lp-mode-dot{animation:none}               /* stop the picking-mode ping */
+  .lp-pin-pulse{animation:none}              /* stop the open-pin ping */
+  .lp-intent.lp-show-hint .lp-intent-hint{animation:none}  /* show hint, no shake */
+}
 `;
 
 export async function mount(opts: MountOptions): Promise<SurfaceApp> {

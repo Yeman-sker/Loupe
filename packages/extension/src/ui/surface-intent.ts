@@ -40,7 +40,7 @@ export function renderIntent(
     attrs: {
       rows: "1",
       placeholder: t("intent.ph"),
-      "aria-label": t("intent.save"),
+      "aria-label": t("intent.commenta"),
     },
   }) as HTMLTextAreaElement;
 

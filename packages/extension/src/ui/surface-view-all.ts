@@ -78,7 +78,7 @@ export function renderViewAll(dom: Dom, pins: PinRecord[], opts: ViewAllOpts): H
 
   const el = dom.el("aside", {
     class: "viewall",
-    attrs: { role: "dialog", "aria-label": "View all marks" },
+    attrs: { role: "dialog", "aria-label": "View all marks", tabindex: "-1" },
   }, [headEl, subEl, listEl, footEl]);
 
   toggleBtn.addEventListener("click", () => {
@@ -93,6 +93,10 @@ export function renderViewAll(dom: Dom, pins: PinRecord[], opts: ViewAllOpts): H
   el.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Escape") opts.onClose();
   });
+
+  // Focus the panel on open so keyboard users land inside it and Esc works
+  // without a prior click. Runs after mount via the macrotask queue.
+  setTimeout(() => { el.focus(); }, 0);
 
   return el;
 }
@@ -156,8 +160,19 @@ function buildItem(dom: Dom, p: PinRecord, opts: ViewAllOpts, t: Translate): HTM
     ...(p.id === opts.currentId ? ["cur"] : []),
   ].join(" ");
 
-  const item = dom.el("li", { class: cls, data: { kind: p.kind } }, [l1, l2]);
+  const item = dom.el("li", {
+    class: cls,
+    data: { kind: p.kind },
+    attrs: { role: "button", tabindex: "0", "aria-label": `#${p.num} ${p.comment ?? ""}`.trim() },
+  }, [l1, l2]);
   item.addEventListener("click", () => opts.onJump(p));
+  item.addEventListener("keydown", (e) => {
+    const ke = e as KeyboardEvent;
+    if (ke.key === "Enter" || ke.key === " ") {
+      ke.preventDefault();
+      opts.onJump(p);
+    }
+  });
   return item;
 }
 

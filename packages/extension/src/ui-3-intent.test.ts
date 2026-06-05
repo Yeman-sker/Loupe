@@ -208,6 +208,20 @@ describe("UI-3 · surface-intent", () => {
     });
   });
 
+  describe("accessible labels", () => {
+    it("labels the comment textarea as a comment field, not the save action", () => {
+      const { textarea } = renderAndTrack();
+      // fakeTrans echoes the i18n key. The comment box must carry the comment
+      // label — not the submit-button label "intent.save" ("Save · ⌘↵").
+      assert.equal(textarea.getAttribute("aria-label"), "intent.commenta");
+    });
+
+    it("keeps the submit button labeled as the save action", () => {
+      const { submitBtn } = renderAndTrack();
+      assert.equal(submitBtn.getAttribute("aria-label"), "intent.savea");
+    });
+  });
+
   describe("⌘/Ctrl+Enter empty → hint + no save", () => {
     it("does not call onSave when textarea is empty", () => {
       const { dispatch, h } = renderAndTrack();
