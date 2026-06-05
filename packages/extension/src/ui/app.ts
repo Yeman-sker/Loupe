@@ -3,8 +3,8 @@
 //   ready → picking → intent → pin (saved to chrome.storage.local)
 // All surfaces live inside the Shadow DOM host from host.ts.
 
-import { createSurfaceHost, SURFACE_ROOT_ID, type Theme } from "./host.js";
-import { createI18n, type Lang } from "./i18n.js";
+import { createSurfaceHost, SURFACE_ROOT_ID } from "./host.js";
+import { createI18n } from "./i18n.js";
 import { capture_locator, resolve } from "./schema.js";
 import {
   create_annotation,
@@ -16,10 +16,8 @@ import {
   delete_annotation,
   copy_markdown,
   type Annotation,
-  type AnnotationContextDraft,
   type AnnotationDraft,
   type IntentKind,
-  type ProjectEntry,
 } from "./lib-storage.js";
 import { renderReady } from "./surface-ready.js";
 import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "./surface-picker.js";
@@ -31,6 +29,9 @@ import { renderProjectChooser } from "./surface-project-chooser.js";
 import { renderFallback } from "./surface-fallback.js";
 import { renderHostAuth } from "./surface-host-auth.js";
 import { renderStatusBar, type StatusModel } from "./surface-status-bar.js";
+import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEntry } from "./pin-model.js";
+import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
+import { readPrefs } from "./prefs.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -54,15 +55,6 @@ export type SurfaceApp = {
   // page. No-op on unauthorized origins, where the toolbar click still grants
   // host permission instead.
   toggleStatusBar: () => void;
-};
-
-const PREFS_KEY = "loupe:v1:ui:prefs";
-
-type Prefs = { theme: Theme; lang: Lang };
-
-type ChromeRuntimeBridge = {
-  readonly lastError?: { readonly message?: string };
-  sendMessage(message: unknown, response_callback: (response: unknown) => void): unknown;
 };
 
 type AppState = {
@@ -1051,189 +1043,4 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   })();
 
   return app;
-}
-
-function annotationToPinRecord(ann: Annotation, num: number, doc: Document): PinRecord {
-  const syncStatus = ann.sync.status;
-  const sync: PinRecord["sync"] = syncStatus === "synced"
-    ? "synced"
-    : syncStatus === "syncing" || syncStatus === "delete_pending"
-      ? "syncing"
-      : syncStatus === "failed"
-        ? "failed"
-        : "local";
-
-  const locatorStatus = ann.target.resolution.locator_status;
-  const loc: PinRecord["loc"] = locatorStatus === "lost"
-    ? "lost"
-    : locatorStatus === "drifted"
-      ? "drifted"
-      : "located";
-
-  const pos = ann.context.position;
-  const rect: DOMRect = {
-    left: pos.x, top: pos.y, right: pos.x + pos.width, bottom: pos.y + pos.height,
-    width: pos.width, height: pos.height, x: pos.x, y: pos.y, toJSON: () => ({}),
-  };
-
-  // Try to find the element live; fall back to a minimal stub
-  let element: Element;
-  try {
-    const found = doc.querySelector(ann.context.element.selector_preview);
-    element = found ?? stubElement(ann, doc);
-  } catch {
-    element = stubElement(ann, doc);
-  }
-
-  return {
-    id: ann.id,
-    num,
-    element,
-    rect,
-    kind: ann.intent.kind,
-    comment: ann.intent.comment,
-    task: ann.lifecycle.task_status === "resolved" ? "done" : "open",
-    loc,
-    confidence: ann.target.resolution.confidence,
-    sync,
-  };
-}
-
-function stubElement(ann: Annotation, doc: Document): Element {
-  const el = doc.createElement(ann.context.element.tag || "div");
-  if (ann.context.element.id) el.id = ann.context.element.id;
-  for (const cls of ann.context.element.classes ?? []) el.classList.add(cls);
-  return el;
-}
-
-function rawToProjectEntry(raw: unknown): ProjectEntry | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  const id = typeof r.project_id === "string" ? r.project_id : typeof r.id === "string" ? r.id : null;
-  if (id === null) return null;
-  const entry: ProjectEntry = {
-    id,
-    name: typeof r.name === "string" ? r.name : id,
-    path: typeof r.path === "string" ? r.path : typeof r.workspace_root_hash === "string" ? r.workspace_root_hash : "",
-  };
-  if (typeof r.workspace_root_hash === "string") entry.workspace_root_hash = r.workspace_root_hash;
-  if (typeof r.branch === "string") entry.branch = r.branch;
-  return entry;
-}
-
-function buildContext(element: Element, doc: Document): AnnotationContextDraft {
-  const view = doc.defaultView;
-  const rect = element.getBoundingClientRect();
-  const tag = element.tagName.toLowerCase();
-  const classes = Array.from(element.classList).slice(0, 10);
-  const rawText = element.textContent?.trim().slice(0, 120);
-  const role = element.getAttribute("role");
-  const ariaLabel = element.getAttribute("aria-label");
-
-  const elCtx: AnnotationContextDraft["element"] = {
-    tag,
-    selector_preview: selectorPreview(element),
-  };
-  if (element.id.length > 0) elCtx.id = element.id;
-  if (role !== null) elCtx.role = role;
-  if (ariaLabel !== null) elCtx.accessible_name = ariaLabel;
-  if (classes.length > 0) elCtx.classes = classes;
-  if (rawText !== undefined && rawText.length > 0) elCtx.text = rawText;
-
-  const a11y: NonNullable<AnnotationContextDraft["a11y"]> = {};
-  if (role !== null) a11y.role = role;
-  if (ariaLabel !== null) a11y.label = ariaLabel;
-
-  return {
-    element: elCtx,
-    ...(Object.keys(a11y).length > 0 ? { a11y } : {}),
-    viewport: {
-      width: view?.innerWidth ?? 0,
-      height: view?.innerHeight ?? 0,
-      dpr: view?.devicePixelRatio ?? 1,
-    },
-    position: {
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    },
-  };
-}
-
-function selectorPreview(element: Element): string {
-  const tag = element.tagName.toLowerCase();
-  if (element.id.length > 0) return `${tag}#${element.id}`;
-  const cls = Array.from(element.classList)
-    .filter((c) => c.length < 32)
-    .slice(0, 2)
-    .join(".");
-  return cls.length > 0 ? `${tag}.${cls}` : tag;
-}
-
-function defaultTheme(doc: Document): Theme {
-  const view = doc.defaultView;
-  if (view !== null && typeof view.matchMedia === "function") {
-    return view.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-  return "light";
-}
-
-async function readPrefs(storage: UiStorage | undefined, doc: Document): Promise<Prefs> {
-  const fallback: Prefs = { theme: defaultTheme(doc), lang: "zh" };
-  if (storage === undefined) return fallback;
-  try {
-    const stored = await storage.get(PREFS_KEY);
-    const value = stored[PREFS_KEY];
-    if (!isRecord(value)) return fallback;
-    return {
-      theme: value.theme === "dark" ? "dark" : value.theme === "light" ? "light" : fallback.theme,
-      lang: value.lang === "en" ? "en" : "zh",
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-async function writePrefs(storage: UiStorage | undefined, prefs: Prefs): Promise<void> {
-  if (storage === undefined) return;
-  try {
-    await storage.set({ [PREFS_KEY]: prefs });
-  } catch {
-    // local-only UI preference; persistence failure is non-fatal.
-  }
-}
-
-function extensionRuntime(): ChromeRuntimeBridge | undefined {
-  const chrome = (globalThis as typeof globalThis & { chrome?: { runtime?: ChromeRuntimeBridge } }).chrome;
-  return typeof chrome?.runtime?.sendMessage === "function" ? chrome.runtime : undefined;
-}
-
-function runtimeMessage(runtime: ChromeRuntimeBridge, message: unknown): Promise<unknown> {
-  return new Promise((resolve) => {
-    try {
-      const maybePromise = runtime.sendMessage(message, (response: unknown) => {
-        if (runtime.lastError !== undefined) {
-          resolve(undefined);
-          return;
-        }
-        resolve(response);
-      });
-      if (isPromiseLike(maybePromise)) void maybePromise.then(resolve, () => resolve(undefined));
-    } catch {
-      resolve(undefined);
-    }
-  });
-}
-
-function isAuthorizedResponse(value: unknown): boolean {
-  return isRecord(value) && value.ok === true && value.authorized === true;
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return typeof value === "object" && value !== null && typeof (value as { then?: unknown }).then === "function";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
