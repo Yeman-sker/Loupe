@@ -4,8 +4,9 @@
 // Emits iris focus pulse while open+located.
 
 import { type Dom } from "./dom.js";
+import { createI18n, type Translate } from "./i18n.js";
 import { type IntentKind } from "./lib-storage.js";
-import { formatConfidencePercent } from "./status-tokens.js";
+import { type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "./status-tokens.js";
 
 export type PinRecord = {
   id: string;
@@ -24,6 +25,7 @@ export type PinRecord = {
 export type RenderPinOpts = {
   onOpen?: (pin: PinRecord) => void;
   stackOffset?: number;
+  t?: Translate;
 };
 
 const KIND_COLORS: Record<IntentKind, string> = {
@@ -57,35 +59,25 @@ function pinCorner(
   return { x: Math.max(PIN + PAD, rect.right), y: Math.max(PIN + PAD, rect.top + scrollY) };
 }
 
-function makeTok(dom: Dom, glyph: string, label: string, cls: string): HTMLElement {
-  return dom.el("span", { class: `tok tok--${cls}` }, [
-    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: glyph }),
-    dom.el("span", { text: label }),
+const defaultT = createI18n("en").t;
+
+function makeTok(dom: Dom, token: TokenSpec): HTMLElement {
+  return dom.el("span", { class: `tok tok--${token.cls}` }, [
+    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: token.glyph }),
+    dom.el("span", { text: token.label }),
   ]);
 }
 
-function taskTok(dom: Dom, pin: PinRecord): HTMLElement {
-  if (pin.task === "done") return makeTok(dom, "✓", "done", "good");
-  if (pin.task === "archived") return makeTok(dom, "▢", "archived", "neutral");
-  return makeTok(dom, "○", "open", "open");
+function taskTok(dom: Dom, t: Translate, pin: PinRecord): HTMLElement {
+  return makeTok(dom, uiTaskToken(t, pin.task));
 }
 
-function locTok(dom: Dom, pin: PinRecord): HTMLElement {
-  const conf = pin.confidence;
-  if (pin.loc === "lost") return makeTok(dom, "✕", "lost", "bad");
-  if (pin.loc === "drifted") {
-    const label = conf !== undefined ? `drifted ${formatConfidencePercent(conf)}` : "drifted";
-    return makeTok(dom, "△", label, "warn");
-  }
-  const label = conf !== undefined ? `located ${formatConfidencePercent(conf)}` : "located";
-  return makeTok(dom, "✓", label, "good");
+function locTok(dom: Dom, t: Translate, pin: PinRecord): HTMLElement {
+  return makeTok(dom, uiLocatorToken(t, pin.loc, pin.confidence));
 }
 
-function syncTok(dom: Dom, pin: PinRecord): HTMLElement {
-  if (pin.sync === "failed") return makeTok(dom, "✕", "failed", "bad");
-  if (pin.sync === "local") return makeTok(dom, "•", "local only", "neutral");
-  if (pin.sync === "syncing") return makeTok(dom, "◌", "syncing", "open");
-  return makeTok(dom, "✓", "synced", "good");
+function syncTok(dom: Dom, t: Translate, pin: PinRecord): HTMLElement {
+  return makeTok(dom, uiSyncToken(t, pin.sync));
 }
 
 export function renderPin(
@@ -96,6 +88,7 @@ export function renderPin(
   vh: number,
   opts: RenderPinOpts = {},
 ): HTMLElement | null {
+  const t = opts.t ?? defaultT;
   const pos = pinCorner(pin.rect, scrollY, vw, vh);
   const offsetY = opts.stackOffset ?? 0;
   const y = pos.y + offsetY;
@@ -151,11 +144,11 @@ export function renderPin(
 
   // Tooltip
   const tipEl = dom.el("span", { class: "lp-pin-tip" }, [
-    taskTok(dom, pin),
+    taskTok(dom, t, pin),
     dom.el("span", { class: "lp-pin-tip-sep", text: "·" }),
-    locTok(dom, pin),
+    locTok(dom, t, pin),
     dom.el("span", { class: "lp-pin-tip-sep", text: "·" }),
-    syncTok(dom, pin),
+    syncTok(dom, t, pin),
   ]);
 
   const children: HTMLElement[] = [

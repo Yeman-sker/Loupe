@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { renderPin, type PinRecord } from "./ui/surface-pin.js";
+import { createI18n } from "./ui/i18n.js";
 
 // ------------------------------------------------------------------ //
 // Minimal fake DOM — same shape as ui-3-intent.test.ts FakeEl/FakeDoc.
@@ -181,6 +182,19 @@ describe("UI-4 · surface-pin", () => {
   });
 
   describe("tooltip text", () => {
+    it("uses the active i18n labels in hover tooltip", () => {
+      const { dom, created } = makeDom();
+      const { t } = createI18n("zh");
+      renderPin(dom, makePin({ task: "open", loc: "located", confidence: 0.9333333333333332, sync: "local" }), 0, 1024, 768, { t });
+      const allText = created.map((e) => e.textContent ?? "").join(" ");
+
+      assert.ok(allText.includes("待办"), "task token should be localized");
+      assert.ok(allText.includes("已定位 93%"), "locator token should be localized and rounded");
+      assert.ok(allText.includes("仅本地"), "sync token should be localized");
+      assert.ok(!allText.includes("located"), "tooltip should not leak EN locator label in zh");
+      assert.ok(!allText.includes("local only"), "tooltip should not leak EN sync label in zh");
+    });
+
     it("located shows confidence %", () => {
       const { dom, created } = makeDom();
       renderPin(dom, makePin({ loc: "located", confidence: 100 }), 0, 1024, 768);

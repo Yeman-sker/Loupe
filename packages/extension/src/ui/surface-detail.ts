@@ -5,7 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
-import { formatConfidencePercent, kindToken } from "./status-tokens.js";
+import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "./status-tokens.js";
 
 export type DetailOpts = {
   t: Translate;
@@ -17,11 +17,13 @@ export type DetailOpts = {
   onRetry?: (pinId: string) => void;
 };
 
-function makeTok(dom: Dom, glyph: string, label: string, cls: string): HTMLElement {
-  return dom.el("span", { class: `tok tok--${cls}` }, [
-    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: glyph }),
-    dom.el("span", { text: label }),
+function makeTok(dom: Dom, token: TokenSpec): HTMLElement {
+  const el = dom.el("span", { class: `tok tok--${token.cls}` }, [
+    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: token.glyph }),
+    dom.el("span", { text: token.label }),
   ]);
+  if (token.kind !== undefined) el.setAttribute("data-kind", token.kind);
+  return el;
 }
 
 export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLElement {
@@ -40,24 +42,10 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
   const commentEl = dom.el("div", { class: "d-comment", text: pin.comment ?? "" });
 
   // Meta tokens
-  const taskTok = isDone
-    ? makeTok(dom, "✓", t("task.done"), "good")
-    : makeTok(dom, "○", t("task.open"), "open");
-  const locTok = pin.loc === "lost"
-    ? makeTok(dom, "✕", t("loc.lost"), "bad")
-    : pin.loc === "drifted"
-      ? makeTok(dom, "△", pin.confidence !== undefined ? `${t("loc.drifted")} ${formatConfidencePercent(pin.confidence)}` : t("loc.drifted"), "warn")
-      : makeTok(dom, "✓", pin.confidence !== undefined ? `${t("loc.located")} ${formatConfidencePercent(pin.confidence)}` : t("loc.located"), "good");
-  const syncTok = pin.sync === "failed"
-    ? makeTok(dom, "✕", t("sync.failed"), "bad")
-    : pin.sync === "local"
-      ? makeTok(dom, "•", t("sync.local"), "neutral")
-      : pin.sync === "syncing"
-        ? makeTok(dom, "◌", t("sync.syncing"), "open")
-        : makeTok(dom, "✓", t("sync.synced"), "good");
-  const kind = kindToken(t, pin.kind);
-  const kindTok = makeTok(dom, kind.glyph, kind.label, kind.cls);
-  kindTok.setAttribute("data-kind", pin.kind);
+  const taskTok = makeTok(dom, uiTaskToken(t, pin.task));
+  const locTok = makeTok(dom, uiLocatorToken(t, pin.loc, pin.confidence));
+  const syncTok = makeTok(dom, uiSyncToken(t, pin.sync));
+  const kindTok = makeTok(dom, kindToken(t, pin.kind));
   const metaEl = dom.el("div", { class: "d-meta" }, [taskTok, locTok, syncTok, kindTok]);
 
   // Actions

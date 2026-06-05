@@ -5,7 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
-import { formatConfidencePercent, kindToken } from "./status-tokens.js";
+import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken } from "./status-tokens.js";
 
 export type ViewAllOpts = {
   t: Translate;
@@ -18,11 +18,13 @@ export type ViewAllOpts = {
   onStartPicking: () => void;
 };
 
-function makeTok(dom: Dom, glyph: string, label: string, cls: string): HTMLElement {
-  return dom.el("span", { class: `tok tok--${cls}` }, [
-    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: glyph }),
-    dom.el("span", { text: label }),
+function makeTok(dom: Dom, token: TokenSpec): HTMLElement {
+  const el = dom.el("span", { class: `tok tok--${token.cls}` }, [
+    dom.el("span", { class: "g", attrs: { "aria-hidden": "true" }, text: token.glyph }),
+    dom.el("span", { text: token.label }),
   ]);
+  if (token.kind !== undefined) el.setAttribute("data-kind", token.kind);
+  return el;
 }
 
 export function renderViewAll(dom: Dom, pins: PinRecord[], opts: ViewAllOpts): HTMLElement {
@@ -79,7 +81,7 @@ export function renderViewAll(dom: Dom, pins: PinRecord[], opts: ViewAllOpts): H
 
   const el = dom.el("aside", {
     class: "viewall",
-    attrs: { role: "dialog", "aria-label": "View all marks", tabindex: "-1" },
+    attrs: { role: "dialog", "aria-label": t("va.aria"), tabindex: "-1" },
   }, [headEl, subEl, listEl, footEl]);
 
   toggleBtn.addEventListener("click", () => {
@@ -127,21 +129,9 @@ function buildList(
 }
 
 function buildItem(dom: Dom, p: PinRecord, opts: ViewAllOpts, t: Translate): HTMLElement {
-  const locTok = p.loc === "lost"
-    ? makeTok(dom, "✕", t("loc.lost"), "bad")
-    : p.loc === "drifted"
-      ? makeTok(dom, "△", p.confidence !== undefined ? `${t("loc.drifted")} ${formatConfidencePercent(p.confidence)}` : t("loc.drifted"), "warn")
-      : makeTok(dom, "✓", p.confidence !== undefined ? `${t("loc.located")} ${formatConfidencePercent(p.confidence)}` : t("loc.located"), "good");
-  const syncTok = p.sync === "failed"
-    ? makeTok(dom, "✕", t("sync.failed"), "bad")
-    : p.sync === "local"
-      ? makeTok(dom, "•", t("sync.local"), "neutral")
-      : p.sync === "syncing"
-        ? makeTok(dom, "◌", t("sync.syncing"), "open")
-        : makeTok(dom, "✓", t("sync.synced"), "good");
-  const kind = kindToken(t, p.kind);
-  const kindTok = makeTok(dom, kind.glyph, kind.label, kind.cls);
-  kindTok.setAttribute("data-kind", p.kind);
+  const locTok = makeTok(dom, uiLocatorToken(t, p.loc, p.confidence));
+  const syncTok = makeTok(dom, uiSyncToken(t, p.sync));
+  const kindTok = makeTok(dom, kindToken(t, p.kind));
 
   const tag = (p.element as Element).tagName?.toLowerCase() ?? "?";
   const sel = selectorPreview(p.element as Element);

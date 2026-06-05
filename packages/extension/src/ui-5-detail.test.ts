@@ -203,6 +203,23 @@ describe("UI-5 · surface-detail", () => {
       assert.ok(comment !== undefined, "d-comment exists");
       assert.equal(comment.textContent, "Hello test");
     });
+
+    it("meta tokens use localized status and kind labels", () => {
+      const { dom, created } = makeDom();
+      renderDetail(dom, makePin({ kind: "question", confidence: 0.9333333333333332, sync: "local" }), {
+        t, onDone: () => {}, onDelete: () => {}, onCopyMarkdown: () => Promise.resolve(true),
+        onClose: () => {}, onViewAll: () => {},
+      });
+      const allText = created.map((e) => e.textContent ?? "").join(" ");
+
+      assert.ok(allText.includes("待办"));
+      assert.ok(allText.includes("已定位 93%"));
+      assert.ok(allText.includes("仅本地"));
+      assert.ok(allText.includes("疑问"));
+      assert.ok(!allText.includes("question"));
+      assert.ok(!allText.includes("located"));
+      assert.ok(!allText.includes("local only"));
+    });
   });
 
   describe("Mark done action", () => {
@@ -346,6 +363,23 @@ describe("UI-5 · surface-view-all", () => {
       assert.ok(curItem !== undefined, "cur item marked");
     });
 
+    it("item meta tokens use localized status and kind labels", () => {
+      const { dom, created } = makeDom();
+      renderViewAll(dom, [makePin({ kind: "question", confidence: 0.9333333333333332, sync: "local" })], {
+        t, route: "/", currentId: null,
+        onClose: () => {}, onJump: () => {}, onCopyAll: () => Promise.resolve(true),
+        onStartPicking: () => {},
+      });
+      const allText = created.map((e) => e.textContent ?? "").join(" ");
+
+      assert.ok(allText.includes("已定位 93%"));
+      assert.ok(allText.includes("仅本地"));
+      assert.ok(allText.includes("疑问"));
+      assert.ok(!allText.includes("question"));
+      assert.ok(!allText.includes("located"));
+      assert.ok(!allText.includes("local only"));
+    });
+
     it("filters out done pins when showDone is off (default)", () => {
       const { dom, created } = makeDom();
       renderViewAll(dom, [makePin({ task: "done" }), makePin({ id: "pin-2", num: 2, task: "open" })], {
@@ -416,6 +450,7 @@ describe("UI-5 · surface-view-all", () => {
       });
       const aside = created.find((e) => e.classList.contains("viewall"))!;
       assert.equal(aside.getAttribute("role"), "dialog");
+      assert.equal(aside.getAttribute("aria-label"), t("va.aria"));
       assert.equal(aside.getAttribute("tabindex"), "-1", "panel is programmatically focusable");
     });
 

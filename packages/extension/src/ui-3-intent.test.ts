@@ -353,6 +353,7 @@ describe("UI-3 · surface-intent", () => {
 
       assert.ok(!rootEl.classList.contains("lp-collapsing"), "lp-collapsing should be removed on error");
       assert.equal((errorEl.style as unknown as Record<string, string>)["display"], "block", "error element should be visible");
+      assert.equal(errorEl.textContent, "intent.saveErr", "error text should come from i18n");
     });
   });
 

@@ -32,6 +32,7 @@ const DICT: Dict = {
   "intent.commenta": ["给 agent 的任务", "Task for the agent"],
   "intent.add": ["再标一个", "Add another"],
   "intent.discard": ["再按一次 Esc 丢弃", "Press Esc again to discard"],
+  "intent.saveErr": ["保存失败", "Save failed"],
 
   "kind.bug": ["缺陷", "bug"],
   "kind.copy": ["文案", "copy"],
@@ -64,6 +65,7 @@ const DICT: Dict = {
   "detail.viewall": ["查看全部", "View all"],
 
   "va.title": ["当前页面的 marks", "Marks on this page"],
+  "va.aria": ["当前页面的 marks", "Marks on this page"],
   "va.open": ["待办", "open"],
   "va.showdone": ["显示已完成", "Show done"],
   "va.copyall": ["复制全部 Markdown", "Copy all Markdown"],

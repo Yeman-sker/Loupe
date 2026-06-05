@@ -189,7 +189,7 @@ export function renderIntent(
     } catch {
       el.classList.remove("lp-collapsing");
       (el as HTMLElement).style.pointerEvents = "";
-      errorEl.textContent = "保存失败 / Save failed";
+      errorEl.textContent = t("intent.saveErr");
       errorEl.style.display = "block";
     }
   }

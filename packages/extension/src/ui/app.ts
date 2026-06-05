@@ -593,6 +593,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         elementCount.set(pin.element, idx + 1);
         const renderOpts: RenderPinOpts = {
           stackOffset: idx * 16,
+          t,
           onOpen: (p) => { state.openDetail = p.id; render(); },
         };
         const pinEl = renderPin(host.dom, pin, scrollY, vw, vh, renderOpts);
