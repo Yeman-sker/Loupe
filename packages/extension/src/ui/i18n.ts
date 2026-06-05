@@ -58,6 +58,7 @@ const DICT: Dict = {
   "detail.delOk": ["已删除", "Deleted"],
   "detail.viewall": ["查看全部", "View all"],
 
+  "va.title": ["当前页面的 marks", "Marks on this page"],
   "va.open": ["待办", "open"],
   "va.showdone": ["显示已完成", "Show done"],
   "va.copyall": ["复制全部 Markdown", "Copy all Markdown"],

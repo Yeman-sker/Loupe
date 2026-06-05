@@ -8,9 +8,10 @@ import { type Translate } from "./i18n.js";
 
 export type ReadyHandlers = {
   onPick: () => void;
+  onViewAll?: () => void;
 };
 
-export function renderReady(dom: Dom, t: Translate, handlers: ReadyHandlers, picking: boolean): HTMLElement {
+export function renderReady(dom: Dom, t: Translate, handlers: ReadyHandlers, picking: boolean, markCount?: number): HTMLElement {
   const loupeMark = dom.el("svg", {
     attrs: {
       width: "20",
@@ -40,7 +41,18 @@ export function renderReady(dom: Dom, t: Translate, handlers: ReadyHandlers, pic
     on: { click: handlers.onPick },
   });
 
-  const el = dom.el("div", { class: "card lp-ready anim-pop" }, [brand, pickBtn]);
+  const children: HTMLElement[] = [brand, pickBtn];
+  if (handlers.onViewAll !== undefined && (markCount ?? 0) > 0) {
+    const viewAllBtn = dom.el("button", {
+      class: "btn ghost lp-ready-viewall",
+      attrs: { type: "button" },
+      text: t("detail.viewall"),
+      on: { click: handlers.onViewAll },
+    });
+    children.push(viewAllBtn);
+  }
+
+  const el = dom.el("div", { class: "card lp-ready anim-pop" }, children);
   if (picking) el.style.display = "none";
   return el;
 }

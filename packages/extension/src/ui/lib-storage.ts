@@ -18,6 +18,8 @@ import {
   type ResolveResult,
 } from "./schema.js";
 
+export type { Annotation } from "./schema.js";
+
 export type { IntentKind } from "./schema.js";
 
 export type AnnotationContextDraft = {
@@ -153,6 +155,74 @@ function route_key_from_url(url: URL): string {
   const params = [...url.searchParams.entries()].sort(([left], [right]) => left.localeCompare(right));
   const search = new URLSearchParams(params).toString();
   return `${url.pathname || "/"}${search.length === 0 ? "" : `?${search}`}`;
+}
+
+export type MarkStore = {
+  get: (key: string) => Promise<unknown>;
+  set: (items: Record<string, unknown>) => Promise<void>;
+};
+
+export type SessionRoute = {
+  project_id: string;
+  session_id: string;
+  route_key?: string;
+};
+
+export function resolve_annotation(mark: Annotation, resolved_at: string): Annotation {
+  return {
+    ...mark,
+    lifecycle: {
+      ...mark.lifecycle,
+      task_status: "resolved",
+      updated_at: resolved_at,
+      task_resolved_at: resolved_at,
+    },
+  };
+}
+
+export async function delete_annotation(
+  store: MarkStore,
+  project_id: string,
+  session_id: string,
+  mark_id: string,
+): Promise<void> {
+  const marks_key = session_marks_key(project_id, session_id);
+  const tombstones_key = storage_keys.project_tombstones(project_id);
+  const active = readArr(await store.get(marks_key));
+  const tombstones = readStrArr(await store.get(tombstones_key));
+  await store.set({
+    [marks_key]: active.filter((m) => m.id !== mark_id),
+    [tombstones_key]: tombstones.includes(mark_id) ? tombstones : [...tombstones, mark_id],
+  });
+}
+
+export function copy_markdown(marks: readonly Annotation[], route: SessionRoute): string {
+  return marks
+    .filter(
+      (m) =>
+        m.project.project_id === route.project_id &&
+        m.project.session_id === route.session_id &&
+        (route.route_key === undefined || m.project.route_key === route.route_key) &&
+        m.lifecycle.task_status === "open",
+    )
+    .map((m) =>
+      [
+        `- id: ${m.id}`,
+        `  selector: ${m.context.element.selector_preview}`,
+        `  comment: ${m.intent.comment}`,
+        `  locator: ${m.target.resolution.locator_status} (${m.target.resolution.confidence})`,
+        `  sync: ${m.sync.status}`,
+      ].join("\n"),
+    )
+    .join("\n\n");
+}
+
+function readArr(value: unknown): Annotation[] {
+  return Array.isArray(value) ? (value as Annotation[]) : [];
+}
+
+function readStrArr(value: unknown): string[] {
+  return Array.isArray(value) && value.every((x) => typeof x === "string") ? value : [];
 }
 
 function fnv1a(text: string): number {

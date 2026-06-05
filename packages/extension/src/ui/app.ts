@@ -18,6 +18,14 @@ import { renderReady } from "./surface-ready.js";
 import { attachPicker, type HoverTarget, type Picker } from "./surface-picker.js";
 import { renderIntent, type Viewport } from "./surface-intent.js";
 import { renderPin, type PinRecord, type RenderPinOpts } from "./surface-pin.js";
+import { renderDetail } from "./surface-detail.js";
+import { renderViewAll } from "./surface-view-all.js";
+import {
+  resolve_annotation,
+  delete_annotation,
+  copy_markdown,
+  type Annotation,
+} from "./lib-storage.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -44,6 +52,8 @@ type AppState = {
   intent: HoverTarget | null;
   pins: PinRecord[];
   markCount: number;
+  openDetail: string | null;
+  showViewAll: boolean;
 };
 
 // CSS for UI-1 surfaces — injected into shadow root alongside host.ts BASE_CSS.
@@ -155,6 +165,62 @@ const SURFACES_CSS = `
 .lp-breadcrumb i{color:var(--ink-3);font-style:normal}
 .lp-breadcrumb b{color:var(--ink);font-weight:600}
 
+/* Detail card — Surface 6 */
+.detail{position:absolute;width:346px;max-width:92vw;z-index:6;padding:16px 16px 14px;overflow:hidden;
+  animation:pop-in var(--dur) var(--ease-out) both}
+.detail .d-target{display:flex;align-items:center;gap:7px;font:500 10.5px/1.3 var(--mono);color:var(--ink-3);margin-bottom:10px}
+.detail .d-target .ix{font-weight:700;color:var(--ink-2)}
+.detail .d-comment{font-size:14px;line-height:1.55;color:var(--ink);margin-bottom:14px;letter-spacing:-.008em}
+.detail .d-meta{display:flex;flex-wrap:wrap;gap:11px;align-items:center;padding-bottom:14px;margin-bottom:13px;
+  border-bottom:var(--hair) solid var(--hairline)}
+.detail .d-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;row-gap:9px}
+.detail .d-actions .spacer{flex:1}
+.detail.is-done{opacity:.72}
+.detail[data-style="slip"]{border-radius:var(--r-sm);border-left:3px solid var(--k,var(--iris))}
+/* Danger button */
+.btn.danger{background:transparent;border:var(--hair) solid var(--t-bad);color:var(--t-bad)}
+.btn.danger:hover{background:color-mix(in srgb,var(--t-bad) 10%,transparent)}
+.btn.danger[data-armed="1"]{background:var(--t-bad);color:#fff}
+
+/* View all panel — Surface 7 */
+.viewall{position:fixed;top:0;right:0;bottom:0;width:340px;max-width:92vw;z-index:7;
+  background:var(--surface);border-left:var(--hair) solid var(--hairline);box-shadow:var(--shadow-pop);
+  display:flex;flex-direction:column;animation:slide-in var(--dur-slow) var(--ease-out) both}
+@keyframes slide-in{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
+.va-head{display:flex;align-items:center;gap:10px;padding:15px 16px;border-bottom:var(--hair) solid var(--hairline)}
+.va-proj{display:inline-flex;align-items:center;gap:7px;font:600 12px/1 var(--font);color:var(--ink)}
+.va-proj::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--iris);
+  box-shadow:0 0 0 3px var(--iris-veil-2)}
+.va-route{font:500 10.5px/1 var(--mono);color:var(--ink-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.va-x{margin-left:auto;width:28px;height:28px;border-radius:var(--r-sm);border:none;background:transparent;
+  color:var(--ink-2);cursor:pointer;display:grid;place-items:center;font-size:15px;flex:none}
+.va-x:hover{background:var(--surface-2);color:var(--ink)}
+.va-sub{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:var(--hair) solid var(--hairline)}
+.va-count{font:600 11px/1 var(--mono);color:var(--ink-2);white-space:nowrap}
+.va-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:7px;font:600 11px/1 var(--font);color:var(--ink-2);cursor:pointer;white-space:nowrap;flex:none;appearance:none;border:none;background:transparent;padding:0}
+.va-toggle:hover{color:var(--ink)}
+.va-toggle:focus-visible{outline:none;box-shadow:var(--ring);border-radius:999px}
+.va-switch{width:30px;height:17px;border-radius:999px;background:var(--hairline-2);position:relative;transition:background var(--dur) var(--ease)}
+.va-switch::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--surface);
+  box-shadow:var(--shadow-xs);transition:transform var(--dur) var(--ease)}
+.va-toggle.on .va-switch{background:var(--iris)}.va-toggle.on .va-switch::after{transform:translateX(13px)}
+.va-list{list-style:none;margin:0;padding:7px;overflow-y:auto;flex:1}
+.va-item{position:relative;padding:11px 12px 11px 14px;border-radius:var(--r-md);cursor:pointer;overflow:hidden;
+  transition:background var(--dur) var(--ease)}
+.va-item::before{content:"";position:absolute;left:3px;top:11px;bottom:11px;width:2.5px;border-radius:2px;
+  background:var(--k,var(--ink-3));opacity:.5;transition:opacity var(--dur) var(--ease),top var(--dur) var(--ease),bottom var(--dur) var(--ease)}
+.va-item:hover{background:var(--surface-2)}.va-item:hover::before{opacity:1;top:7px;bottom:7px}
+.va-item.cur{background:var(--iris-veil-2)}
+.va-l1{display:flex;gap:8px;font-size:12.5px;font-weight:600;line-height:1.45;color:var(--ink);align-items:baseline}
+.va-n{font:700 12px/1.5 var(--mono);color:var(--ink-3);flex:none}
+.va-c{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.va-l2{margin-top:7px;font:500 10.5px/1 var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+.va-item.done{opacity:.6}
+.va-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:var(--hair) solid var(--hairline)}
+.va-empty{padding:42px 18px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:0}
+.va-empty .et{font-size:13.5px;font-weight:600}
+.va-empty .es{margin:6px 0 16px;font-size:12px;color:var(--ink-2)}
+
 /* Pin */
 .lp-pin{position:absolute;width:24px;height:24px;
   transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
@@ -227,12 +293,19 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     intent: null,
     pins: [],
     markCount: 0,
+    openDetail: null,
+    showViewAll: false,
   };
+
+  // In-memory annotation store for resolve/delete/copy operations
+  const annotations = new Map<string, Annotation>();
 
   let currentPicker: Picker | null = null;
   let detachReady: (() => void) | null = null;
   let detachIntent: (() => void) | null = null;
   let detachAddAnother: (() => void) | null = null;
+  let detachDetail: (() => void) | null = null;
+  let detachViewAll: (() => void) | null = null;
   const pinDetachers: Array<() => void> = [];
   let prevIntentFocus: Element | null = null;
 
@@ -253,6 +326,14 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachAddAnother();
       detachAddAnother = null;
     }
+    if (detachDetail !== null) {
+      detachDetail();
+      detachDetail = null;
+    }
+    if (detachViewAll !== null) {
+      detachViewAll();
+      detachViewAll = null;
+    }
     for (const d of pinDetachers) d();
     pinDetachers.length = 0;
   }
@@ -264,7 +345,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     clearSurfaces();
 
     // Always mount the ready panel (hidden during picking)
-    const readyEl = renderReady(host.dom, t, { onPick: startPicking }, state.picking);
+    const readyEl = renderReady(host.dom, t, {
+      onPick: startPicking,
+      onViewAll: () => { state.showViewAll = true; render(); },
+    }, state.picking, state.markCount);
     detachReady = host.mount(readyEl);
 
     // Picker mode
@@ -316,6 +400,51 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachIntent = host.mount(intentEl);
     }
 
+    // Detail card — Surface 6
+    if (state.openDetail !== null) {
+      const pin = state.pins.find((p) => p.id === state.openDetail);
+      if (pin !== undefined) {
+        const view = opts.document.defaultView;
+        const scrollY = view?.scrollY ?? 0;
+        const vw = view?.innerWidth ?? 1024;
+        const PAD = 12;
+        const CARD_W = 346;
+        const left = Math.max(PAD, Math.min(pin.rect.left, vw - CARD_W - PAD));
+        const top = pin.rect.bottom + scrollY + 10;
+        const detailEl = renderDetail(host.dom, pin, {
+          t,
+          onDone: (pinId) => doResolve(pinId),
+          onDelete: (pinId) => doDelete(pinId),
+          onCopyMarkdown: (pinId) => doCopyMarkdown(pinId),
+          onClose: () => { state.openDetail = null; render(); },
+          onViewAll: () => { state.showViewAll = true; render(); },
+        });
+        detailEl.style.left = `${left}px`;
+        detailEl.style.top = `${top}px`;
+        detachDetail = host.mount(detailEl);
+      }
+    }
+
+    // View all panel — Surface 7
+    if (state.showViewAll) {
+      const doc = opts.document;
+      const route = doc.location?.pathname ?? "/";
+      const viewAllEl = renderViewAll(host.dom, state.pins, {
+        t,
+        route,
+        currentId: state.openDetail,
+        onClose: () => { state.showViewAll = false; render(); },
+        onJump: (pin) => {
+          pin.element.scrollIntoView?.({ behavior: "smooth", block: "center" });
+          state.openDetail = pin.id;
+          render();
+        },
+        onCopyAll: () => doCopyAll(),
+        onStartPicking: startPicking,
+      });
+      detachViewAll = host.mount(viewAllEl);
+    }
+
     // Pins — group by element to compute stacking offsets
     {
       const view = opts.document.defaultView;
@@ -328,7 +457,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         elementCount.set(pin.element, idx + 1);
         const renderOpts: RenderPinOpts = {
           stackOffset: idx * 16,
-          onOpen: (p) => { console.log("pin:open", p.id); },
+          onOpen: (p) => { state.openDetail = p.id; render(); },
         };
         const pinEl = renderPin(host.dom, pin, scrollY, vw, vh, renderOpts);
         if (pinEl !== null) pinDetachers.push(host.mount(pinEl));
@@ -339,7 +468,92 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   function startPicking(): void {
     state.picking = true;
     state.intent = null;
+    state.openDetail = null;
+    state.showViewAll = false;
     render();
+  }
+
+  function doResolve(pinId: string): void {
+    const pin = state.pins.find((p) => p.id === pinId);
+    const annotation = annotations.get(pinId);
+    if (pin === undefined) return;
+    pin.task = "done";
+    if (annotation !== undefined) {
+      const resolved = resolve_annotation(annotation, new Date().toISOString());
+      annotations.set(pinId, resolved);
+      if (opts.storage !== undefined) {
+        const project = buildProjectFromPin(pin);
+        if (project !== null) {
+          const key = session_marks_key(project.project_id, project.session_id);
+          void opts.storage.get(key).then((stored) => {
+            const arr = Array.isArray(stored[key]) ? (stored[key] as unknown[]) : [];
+            const updated = arr.map((m) => {
+              if (typeof m === "object" && m !== null && (m as Record<string, unknown>).id === pinId) {
+                return resolved;
+              }
+              return m;
+            });
+            void opts.storage!.set({ [key]: updated });
+          });
+        }
+      }
+    }
+    state.openDetail = null;
+    render();
+  }
+
+  function doDelete(pinId: string): void {
+    const pin = state.pins.find((p) => p.id === pinId);
+    if (pin === undefined) return;
+    state.pins = state.pins.filter((p) => p.id !== pinId);
+    annotations.delete(pinId);
+    state.openDetail = null;
+    if (opts.storage !== undefined) {
+      const project = buildProjectFromPin(pin);
+      if (project !== null) {
+        const store = {
+          get: (key: string) => opts.storage!.get(key).then((r) => r[key]),
+          set: (items: Record<string, unknown>) => opts.storage!.set(items),
+        };
+        void delete_annotation(store, project.project_id, project.session_id, pinId);
+      }
+    }
+    render();
+  }
+
+  function doCopyMarkdown(pinId: string): Promise<boolean> {
+    const annotation = annotations.get(pinId);
+    const pin = state.pins.find((p) => p.id === pinId);
+    let text: string;
+    if (annotation !== undefined) {
+      text = copy_markdown([annotation], {
+        project_id: annotation.project.project_id,
+        session_id: annotation.project.session_id,
+        route_key: annotation.project.route_key,
+      });
+    } else if (pin !== undefined) {
+      text = `- id: ${pin.id}\n  comment: ${pin.comment ?? ""}`;
+    } else {
+      return Promise.resolve(false);
+    }
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+  }
+
+  function doCopyAll(): Promise<boolean> {
+    const allAnnotations = [...annotations.values()];
+    if (allAnnotations.length === 0) return Promise.resolve(false);
+    const first = allAnnotations[0]!;
+    const text = copy_markdown(allAnnotations, {
+      project_id: first.project.project_id,
+      session_id: first.project.session_id,
+    });
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+  }
+
+  function buildProjectFromPin(pin: PinRecord): { project_id: string; session_id: string } | null {
+    const annotation = annotations.get(pin.id);
+    if (annotation !== undefined) return annotation.project;
+    return null;
   }
 
   async function doSave(element: Element, comment: string, kind: IntentKind): Promise<void> {
@@ -379,11 +593,13 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       element,
       rect,
       kind,
+      comment,
       task: "open",
       loc: "located",
       confidence: 100,
       sync: "local",
     };
+    annotations.set(annotation.id, annotation);
     state.pins.push(pinRecord);
     state.intent = null;
     render();

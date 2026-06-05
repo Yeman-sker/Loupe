@@ -12,6 +12,7 @@ export type PinRecord = {
   element: Element;
   rect: DOMRect;
   kind: IntentKind;
+  comment?: string;
   task?: "open" | "done" | "archived";
   loc?: "located" | "drifted" | "lost";
   confidence?: number;
