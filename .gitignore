@@ -3,3 +3,6 @@ opensource/
 node_modules/
 dist/
 .DS_Store
+packages/e2e/.test-ext/
+packages/e2e/test-results/
+packages/e2e/playwright-report/

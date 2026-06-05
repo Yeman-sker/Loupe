@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loupe E2E Fixture</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background: #f5f5f5;
+      min-height: 2400px;
+      padding: 0 0 120px;
+    }
+
+    /* Layout */
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Hero */
+    .hero {
+      background: #1e3a5f;
+      color: #ffffff;
+      padding: 64px 24px;
+      text-align: center;
+    }
+
+    .hero h1 {
+      font-size: 40px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 16px;
+    }
+
+    .hero p {
+      font-size: 18px;
+      color: #b0c8e8;
+      margin-bottom: 32px;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    /* Buttons */
+    button {
+      font-family: system-ui, sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      padding: 12px 24px;
+      cursor: pointer;
+      display: inline-block;
+    }
+
+    button.primary {
+      background: #2563eb;
+      color: #ffffff;
+    }
+
+    button.secondary {
+      background: #ffffff;
+      color: #1e3a5f;
+      border: 2px solid #b0c8e8;
+    }
+
+    button.submit {
+      background: #16a34a;
+      color: #ffffff;
+      width: 100%;
+      padding: 14px;
+      font-size: 16px;
+    }
+
+    /* Cards */
+    .card {
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 28px 32px;
+    }
+
+    .card h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #1e3a5f;
+    }
+
+    .card p {
+      font-size: 14px;
+      color: #4b5563;
+      margin-bottom: 16px;
+    }
+
+    .card ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .card ul li {
+      font-size: 14px;
+      padding: 8px 0;
+      border-bottom: 1px solid #e5e7eb;
+      color: #374151;
+    }
+
+    .card ul li:last-child {
+      border-bottom: none;
+    }
+
+    /* Cards grid */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      padding: 48px 24px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* Form */
+    .form-section {
+      background: #ffffff;
+      padding: 48px 24px;
+    }
+
+    .form-inner {
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    .form-inner h2 {
+      font-size: 26px;
+      font-weight: 700;
+      margin-bottom: 24px;
+      color: #1e3a5f;
+    }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #374151;
+    }
+
+    .field input,
+    .field textarea {
+      font-family: system-ui, sans-serif;
+      font-size: 15px;
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #f9fafb;
+      color: #1a1a1a;
+    }
+
+    .field textarea {
+      resize: vertical;
+      height: 100px;
+    }
+
+    /* Scroll region */
+    .scroll-section {
+      padding: 48px 24px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .scroll-section h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #1e3a5f;
+    }
+
+    #scroll-region {
+      height: 160px;
+      overflow: auto;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 12px 16px;
+    }
+
+    #scroll-region p {
+      font-size: 14px;
+      color: #4b5563;
+      padding: 4px 0;
+    }
+
+    /* Shadow host section */
+    .shadow-section {
+      padding: 48px 24px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .shadow-section > h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #1e3a5f;
+    }
+
+    /* Footer */
+    .footer {
+      background: #1e3a5f;
+      color: #b0c8e8;
+      text-align: center;
+      padding: 48px 24px;
+      margin-top: 80px;
+    }
+
+    .footer p {
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== HERO ===== -->
+  <header class="hero">
+    <h1 id="hero-heading">See every element. Pin anything.</h1>
+    <p id="hero-sub">Loupe is a precision DOM annotation tool for designers and engineers who care about the details.</p>
+    <div class="btn-group">
+      <button id="cta-primary" class="primary">Get started</button>
+      <button id="cta-secondary" class="secondary">Learn more</button>
+    </div>
+  </header>
+
+  <!-- ===== CARDS ===== -->
+  <div class="cards-grid">
+
+    <section id="card-pricing" class="card">
+      <h2 id="card-pricing-heading">Pricing</h2>
+      <p id="card-pricing-desc">Simple, transparent pricing for every team size.</p>
+      <ul id="card-pricing-list">
+        <li id="pricing-item-free">Free — up to 3 projects</li>
+        <li id="pricing-item-pro">Pro — $12 / month</li>
+        <li id="pricing-item-team">Team — $49 / month</li>
+        <li id="pricing-item-enterprise">Enterprise — contact us</li>
+      </ul>
+    </section>
+
+    <section id="card-features" class="card">
+      <h2 id="card-features-heading">Features</h2>
+      <p id="card-features-desc">Everything you need to annotate and ship faster.</p>
+      <ul id="card-features-list">
+        <li id="feature-item-picker">Element picker with shadow DOM support</li>
+        <li id="feature-item-pins">Persistent pins with breadcrumb paths</li>
+        <li id="feature-item-dims">Live dimension and spacing readout</li>
+        <li id="feature-item-export">Export annotations as JSON or CSV</li>
+      </ul>
+    </section>
+
+  </div>
+
+  <!-- ===== SIGNUP FORM ===== -->
+  <section class="form-section">
+    <div class="form-inner">
+      <h2 id="form-heading">Join the beta</h2>
+      <form id="signup-form" action="#" method="post" onsubmit="return false;">
+        <div class="field">
+          <label for="field-name">Full name</label>
+          <input id="field-name" type="text" name="name" placeholder="Ada Lovelace" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="field-email">Email address</label>
+          <input id="field-email" type="email" name="email" placeholder="ada@example.com" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="field-message">How will you use Loupe?</label>
+          <textarea id="field-message" name="message" placeholder="I work on a design-systems team and want to..."></textarea>
+        </div>
+        <button id="form-submit" type="submit" class="submit">Request access</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ===== SCROLLABLE REGION ===== -->
+  <div class="scroll-section">
+    <h2 id="scroll-section-heading">Changelog</h2>
+    <div id="scroll-region">
+      <p id="scroll-line-1">v0.1.0 — Initial release. Basic element picker.</p>
+      <p id="scroll-line-2">v0.1.1 — Fix hover highlight z-index on fixed headers.</p>
+      <p id="scroll-line-3">v0.1.2 — Add breadcrumb path display.</p>
+      <p id="scroll-line-4">v0.1.3 — Support iframes with same-origin src.</p>
+      <p id="scroll-line-5">v0.1.4 — Keyboard shortcut to toggle picker (Alt+P).</p>
+      <p id="scroll-line-6">v0.2.0 — Shadow DOM penetration via open roots.</p>
+      <p id="scroll-line-7">v0.2.1 — Pin persistence across page reloads.</p>
+      <p id="scroll-line-8">v0.2.2 — Dimension overlay with box-model view.</p>
+      <p id="scroll-line-9">v0.2.3 — Multi-pin mode: hold Shift to add.</p>
+      <p id="scroll-line-10">v0.2.4 — Export pins as JSON.</p>
+      <p id="scroll-line-11">v0.2.5 — Export pins as CSV.</p>
+      <p id="scroll-line-12">v0.3.0 — Collaborative annotations (beta).</p>
+      <p id="scroll-line-13">v0.3.1 — Real-time cursor presence.</p>
+      <p id="scroll-line-14">v0.3.2 — Comment threads on pins.</p>
+      <p id="scroll-line-15">v0.3.3 — Resolve/reopen comment threads.</p>
+      <p id="scroll-line-16">v0.3.4 — Notification emails for new comments.</p>
+      <p id="scroll-line-17">v0.3.5 — Slack integration for pin events.</p>
+      <p id="scroll-line-18">v0.3.6 — Improved highlight color contrast.</p>
+      <p id="scroll-line-19">v0.3.7 — Fix scroll offset on sticky navbars.</p>
+      <p id="scroll-line-20">v0.3.8 — Fix scroll offset on position:fixed elements.</p>
+      <p id="scroll-line-21">v0.4.0 — Extension toolbar redesign.</p>
+      <p id="scroll-line-22">v0.4.1 — Quick-copy selector to clipboard.</p>
+      <p id="scroll-line-23">v0.4.2 — Quick-copy XPath to clipboard.</p>
+      <p id="scroll-line-24">v0.4.3 — Computed style panel.</p>
+      <p id="scroll-line-25">v0.4.4 — Accessibility tree overlay.</p>
+      <p id="scroll-line-26">v0.4.5 — Color contrast checker on picked element.</p>
+      <p id="scroll-line-27">v0.4.6 — Focus ring visibility audit.</p>
+      <p id="scroll-line-28">v0.4.7 — Tab order visualisation.</p>
+      <p id="scroll-line-29">v0.4.8 — Performance: reduce reflows on hover.</p>
+      <p id="scroll-bottom-line">v0.5.0 — Stable release candidate. All known bugs resolved.</p>
+    </div>
+  </div>
+
+  <!-- ===== SHADOW DOM HOST ===== -->
+  <div class="shadow-section">
+    <h2 id="shadow-section-label">Shadow DOM component</h2>
+    <div id="shadow-host"></div>
+  </div>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer">
+    <p id="footer-tagline">Loupe — precision DOM annotation for everyone.</p>
+    <button id="footer-cta" class="primary">Get started for free</button>
+  </footer>
+
+  <script>
+    // Attach an open shadow root so the picker can penetrate it.
+    const sh = document.getElementById('shadow-host').attachShadow({ mode: 'open' });
+    sh.innerHTML = [
+      '<style>',
+      '  .card {',
+      '    background: #ffffff;',
+      '    border: 1px solid #d1d5db;',
+      '    border-radius: 10px;',
+      '    padding: 28px 32px;',
+      '    font-family: system-ui, sans-serif;',
+      '  }',
+      '  h2 {',
+      '    font-size: 20px;',
+      '    font-weight: 700;',
+      '    margin: 0 0 12px;',
+      '    color: #1e3a5f;',
+      '  }',
+      '  p {',
+      '    font-size: 14px;',
+      '    color: #4b5563;',
+      '    margin: 0 0 16px;',
+      '  }',
+      '  button {',
+      '    font-family: system-ui, sans-serif;',
+      '    font-size: 15px;',
+      '    font-weight: 600;',
+      '    background: #2563eb;',
+      '    color: #ffffff;',
+      '    border: none;',
+      '    border-radius: 6px;',
+      '    padding: 10px 20px;',
+      '    cursor: pointer;',
+      '  }',
+      '</style>',
+      '<div id="shadow-card" class="card">',
+      '  <h2 id="shadow-heading">Inside shadow DOM</h2>',
+      '  <p id="shadow-desc">This element lives inside an open shadow root. The Loupe picker should be able to reach it via elementFromPoint.</p>',
+      '  <button id="shadow-btn">Shadow button</button>',
+      '</div>'
+    ].join('\n');
+  </script>
+
+</body>
+</html>

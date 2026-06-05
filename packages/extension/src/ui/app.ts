@@ -177,7 +177,7 @@ const SURFACES_CSS = `
 
 /* Detail card — Surface 6 */
 .detail{position:absolute;width:346px;max-width:92vw;z-index:6;padding:16px 16px 14px;overflow:hidden;
-  animation:pop-in var(--dur) var(--ease-out) both}
+  pointer-events:auto;animation:pop-in var(--dur) var(--ease-out) both}
 .detail .d-target{display:flex;align-items:center;gap:7px;font:500 10.5px/1.3 var(--mono);color:var(--ink-3);margin-bottom:10px}
 .detail .d-target .ix{font-weight:700;color:var(--ink-2)}
 .detail .d-comment{font-size:14px;line-height:1.55;color:var(--ink);margin-bottom:14px;letter-spacing:-.008em}
@@ -195,7 +195,7 @@ const SURFACES_CSS = `
 /* View all panel — Surface 7 */
 .viewall{position:fixed;top:0;right:0;bottom:0;width:340px;max-width:92vw;z-index:7;
   background:var(--surface);border-left:var(--hair) solid var(--hairline);box-shadow:var(--shadow-pop);
-  display:flex;flex-direction:column;animation:slide-in var(--dur-slow) var(--ease-out) both}
+  pointer-events:auto;display:flex;flex-direction:column;animation:slide-in var(--dur-slow) var(--ease-out) both}
 @keyframes slide-in{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
 .va-head{display:flex;align-items:center;gap:10px;padding:15px 16px;border-bottom:var(--hair) solid var(--hairline)}
 .va-proj{display:inline-flex;align-items:center;gap:7px;font:600 12px/1 var(--font);color:var(--ink)}
