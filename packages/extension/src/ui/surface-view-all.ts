@@ -10,6 +10,7 @@ export type ViewAllOpts = {
   t: Translate;
   route: string;
   currentId: string | null;
+  projectName?: string;
   onClose: () => void;
   onJump: (pin: PinRecord) => void;
   onCopyAll: () => Promise<boolean>;
@@ -31,7 +32,7 @@ export function renderViewAll(dom: Dom, pins: PinRecord[], opts: ViewAllOpts): H
   const anyFallback = pins.some((p) => p.sync === "failed" || p.sync === "local");
 
   // Header
-  const projLabel = dom.el("span", { class: "va-proj", text: t("va.title") });
+  const projLabel = dom.el("span", { class: "va-proj", text: opts.projectName ?? t("va.title") });
   const routeLabel = dom.el("span", { class: "va-route mono", text: opts.route });
   const closeBtn = dom.el("button", {
     class: "va-x",

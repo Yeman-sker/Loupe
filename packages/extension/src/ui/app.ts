@@ -10,9 +10,16 @@ import {
   create_annotation,
   project_scope_from_url,
   session_marks_key,
+  storage_keys,
+  probe_daemon_health,
+  resolve_annotation,
+  delete_annotation,
+  copy_markdown,
+  type Annotation,
   type AnnotationContextDraft,
   type AnnotationDraft,
   type IntentKind,
+  type ProjectEntry,
 } from "./lib-storage.js";
 import { renderReady } from "./surface-ready.js";
 import { attachPicker, type HoverTarget, type Picker } from "./surface-picker.js";
@@ -20,12 +27,8 @@ import { renderIntent, type Viewport } from "./surface-intent.js";
 import { renderPin, type PinRecord, type RenderPinOpts } from "./surface-pin.js";
 import { renderDetail } from "./surface-detail.js";
 import { renderViewAll } from "./surface-view-all.js";
-import {
-  resolve_annotation,
-  delete_annotation,
-  copy_markdown,
-  type Annotation,
-} from "./lib-storage.js";
+import { renderProjectChooser } from "./surface-project-chooser.js";
+import { renderFallback } from "./surface-fallback.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -54,6 +57,11 @@ type AppState = {
   markCount: number;
   openDetail: string | null;
   showViewAll: boolean;
+  daemonOnline: boolean;
+  showProjectChooser: boolean;
+  showFallback: boolean;
+  projects: ProjectEntry[];
+  selectedProject: string | null;
 };
 
 // CSS for UI-1 surfaces — injected into shadow root alongside host.ts BASE_CSS.
@@ -73,6 +81,8 @@ const SURFACES_CSS = `
   font-size:12.5px;color:var(--ink-2);white-space:nowrap;z-index:1}
 .lp-mode-dot{width:7px;height:7px;border-radius:50%;background:var(--iris);
   flex-shrink:0;animation:lp-ping 1.4s ease-in-out infinite}
+.lp-mode-proj{padding-left:8px;margin-left:2px;border-left:var(--hair) solid var(--hairline-2);
+  font:500 11.5px/1 var(--font);color:var(--ink-3)}
 @keyframes lp-ping{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(1.6)}}
 
 /* Selection frame — positioned absolute within overlay (scroll-aware) */
@@ -273,6 +283,32 @@ const SURFACES_CSS = `
   transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
 .lp-pin-tip-sep{color:var(--ink-3)}
 .lp-pin:hover .lp-pin-tip,.lp-pin:focus-visible .lp-pin-tip{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* Project chooser — Surface 2 */
+.center-wrap{position:fixed;inset:0;display:grid;place-items:center;z-index:8;pointer-events:none}
+.center-wrap>.chooser{pointer-events:auto}
+.chooser{width:330px;padding:18px}
+.chooser h3{font-size:13.5px;font-weight:600;margin:0 0 4px}
+.chooser .sub{font-size:11.5px;color:var(--ink-2);margin:0 0 14px}
+.proj-list{list-style:none;margin:0 0 14px;padding:0;display:flex;flex-direction:column;gap:5px}
+.proj{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:var(--r-md);cursor:pointer;
+  border:var(--hair) solid transparent;transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+.proj:hover{background:var(--surface-2)}
+.proj.sel{border-color:color-mix(in srgb,var(--iris) 45%,var(--hairline));background:var(--iris-veil-2)}
+.proj .pdot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink-3);flex:none}
+.proj.sel .pdot{border-color:var(--iris);background:var(--iris)}
+.proj .pmeta{flex:1}
+.proj .pname{font-size:13px;font-weight:600}
+.proj .ppath{font:500 10.5px/1.2 var(--mono);color:var(--ink-3);margin-top:2px}
+.chooser-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-top:var(--hair) solid var(--hairline);padding-top:13px}
+
+/* Page-level fallback — Surface 8 */
+.fallback{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);width:380px;max-width:92vw;z-index:7;padding:15px 16px;
+  animation:pop-in var(--dur) var(--ease-out) both}
+.fallback h4{font-size:13px;font-weight:600;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+.fallback p{font-size:12px;line-height:1.5;color:var(--ink-2);margin:0 0 13px}
+.fallback .fb-row{display:flex;align-items:center;gap:11px}
 `;
 
 export async function mount(opts: MountOptions): Promise<SurfaceApp> {
@@ -295,6 +331,11 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     markCount: 0,
     openDetail: null,
     showViewAll: false,
+    daemonOnline: true,
+    showProjectChooser: false,
+    showFallback: false,
+    projects: [],
+    selectedProject: null,
   };
 
   // In-memory annotation store for resolve/delete/copy operations
@@ -306,6 +347,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachAddAnother: (() => void) | null = null;
   let detachDetail: (() => void) | null = null;
   let detachViewAll: (() => void) | null = null;
+  let detachChooser: (() => void) | null = null;
+  let detachFallback: (() => void) | null = null;
   const pinDetachers: Array<() => void> = [];
   let prevIntentFocus: Element | null = null;
 
@@ -334,6 +377,14 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachViewAll();
       detachViewAll = null;
     }
+    if (detachChooser !== null) {
+      detachChooser();
+      detachChooser = null;
+    }
+    if (detachFallback !== null) {
+      detachFallback();
+      detachFallback = null;
+    }
     for (const d of pinDetachers) d();
     pinDetachers.length = 0;
   }
@@ -353,6 +404,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
     // Picker mode
     if (state.picking) {
+      const projName = currentProjectName();
       const picker = attachPicker(doc, host.dom, t, {
         onHover: (target) => {
           state.hover = target;
@@ -368,7 +420,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           state.hover = null;
           render();
         },
-      });
+      }, projName !== undefined ? { projectName: projName } : {});
       currentPicker = picker;
       // Mount mode indicator, selection frame, and breadcrumb into the host wrapper
       host.mount(picker.modeEl);
@@ -418,6 +470,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           onCopyMarkdown: (pinId) => doCopyMarkdown(pinId),
           onClose: () => { state.openDetail = null; render(); },
           onViewAll: () => { state.showViewAll = true; render(); },
+          onRetry: (pinId) => doRetry(pinId),
         });
         detailEl.style.left = `${left}px`;
         detailEl.style.top = `${top}px`;
@@ -429,10 +482,13 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     if (state.showViewAll) {
       const doc = opts.document;
       const route = doc.location?.pathname ?? "/";
+      // Current project low-noise in header; local/temporary scope → "project not linked".
+      const projName = currentProjectName() ?? t("proj.notlink");
       const viewAllEl = renderViewAll(host.dom, state.pins, {
         t,
         route,
         currentId: state.openDetail,
+        projectName: projName,
         onClose: () => { state.showViewAll = false; render(); },
         onJump: (pin) => {
           pin.element.scrollIntoView?.({ behavior: "smooth", block: "center" });
@@ -443,6 +499,24 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         onStartPicking: startPicking,
       });
       detachViewAll = host.mount(viewAllEl);
+    }
+
+    // Project chooser — Surface 2
+    if (state.showProjectChooser) {
+      const chooserEl = renderProjectChooser(host.dom, state.projects, {
+        t,
+        onPick: (id) => doPickProject(id),
+      });
+      detachChooser = host.mount(chooserEl);
+    }
+
+    // Page-level fallback — Surface 8
+    if (state.showFallback) {
+      const fallbackEl = renderFallback(host.dom, {
+        t,
+        onCopy: () => doCopyAll(),
+      });
+      detachFallback = host.mount(fallbackEl);
     }
 
     // Pins — group by element to compute stacking offsets
@@ -466,11 +540,36 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   }
 
   function startPicking(): void {
+    // Show project chooser when multiple projects exist and none selected yet
+    if (state.projects.length > 1 && state.selectedProject === null) {
+      state.showProjectChooser = true;
+      state.openDetail = null;
+      state.showViewAll = false;
+      render();
+      return;
+    }
+    state.picking = true;
+    state.intent = null;
+    state.openDetail = null;
+    state.showViewAll = false;
+    state.showProjectChooser = false;
+    render();
+  }
+
+  function doPickProject(id: string | "local"): void {
+    state.selectedProject = id === "local" ? null : id;
+    state.showProjectChooser = false;
     state.picking = true;
     state.intent = null;
     state.openDetail = null;
     state.showViewAll = false;
     render();
+  }
+
+  // Name of the currently selected project, or undefined when local/not-linked.
+  function currentProjectName(): string | undefined {
+    if (state.selectedProject === null) return undefined;
+    return state.projects.find((p) => p.id === state.selectedProject)?.name;
   }
 
   function doResolve(pinId: string): void {
@@ -521,6 +620,53 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     render();
   }
 
+  // Entry-point Retry: re-probe daemon, re-queue a failed mark as local_only.
+  // Actual daemon POST is performed by the background worker (phase 3), which
+  // holds the auth token; the UI never sees a token (exposes_token_to_page:false).
+  function doRetry(pinId: string): void {
+    const pin = state.pins.find((p) => p.id === pinId);
+    const annotation = annotations.get(pinId);
+    if (pin === undefined) return;
+    void probe_daemon_health().then((online) => {
+      if (online) {
+        state.daemonOnline = true;
+        state.showFallback = false;
+        pin.sync = "local";
+        if (annotation !== undefined) {
+          const requeued: Annotation = {
+            ...annotation,
+            sync: {
+              ...annotation.sync,
+              status: "local_only",
+              retry_count: annotation.sync.retry_count + 1,
+            },
+          };
+          annotations.set(pinId, requeued);
+          persistMark(pin, requeued);
+        }
+      } else {
+        state.daemonOnline = false;
+        state.showFallback = true;
+      }
+      render();
+    });
+  }
+
+  // Replace a single mark in its session's stored array.
+  function persistMark(pin: PinRecord, next: Annotation): void {
+    if (opts.storage === undefined) return;
+    const project = buildProjectFromPin(pin);
+    if (project === null) return;
+    const key = session_marks_key(project.project_id, project.session_id);
+    void opts.storage.get(key).then((stored) => {
+      const arr = Array.isArray(stored[key]) ? (stored[key] as unknown[]) : [];
+      const updated = arr.map((m) =>
+        typeof m === "object" && m !== null && (m as Record<string, unknown>).id === next.id ? next : m,
+      );
+      void opts.storage!.set({ [key]: updated });
+    });
+  }
+
   function doCopyMarkdown(pinId: string): Promise<boolean> {
     const annotation = annotations.get(pinId);
     const pin = state.pins.find((p) => p.id === pinId);
@@ -558,7 +704,17 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   async function doSave(element: Element, comment: string, kind: IntentKind): Promise<void> {
     const doc = opts.document;
-    const project = project_scope_from_url({ url: doc.location.href, title: doc.title });
+    const selectedEntry = state.selectedProject !== null
+      ? state.projects.find((p) => p.id === state.selectedProject)
+      : undefined;
+    const scopeInput: Parameters<typeof project_scope_from_url>[0] = {
+      url: doc.location.href,
+      title: doc.title,
+    };
+    if (selectedEntry?.id !== undefined) scopeInput.project_id = selectedEntry.id;
+    if (selectedEntry?.workspace_root_hash !== undefined) scopeInput.workspace_root_hash = selectedEntry.workspace_root_hash;
+    if (selectedEntry?.branch !== undefined) scopeInput.branch = selectedEntry.branch;
+    const project = project_scope_from_url(scopeInput);
     const locator = capture_locator(element);
     const resolution = resolve(locator, doc);
     const context = buildContext(element, doc);
@@ -606,6 +762,17 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
     // Show "Add another" near the new pin
     showAddAnother(rect);
+
+    // Passive daemon health check after save — surface fallback if offline.
+    // Save already succeeded above; this never blocks or fails the save.
+    if (state.showFallback) return;
+    void probe_daemon_health().then((online) => {
+      state.daemonOnline = online;
+      if (!online) {
+        state.showFallback = true;
+        render();
+      }
+    });
   }
 
   function showAddAnother(pinRect: DOMRect): void {
@@ -677,7 +844,118 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   };
 
   render();
+
+  // Async init: load stored pins, discover projects, check daemon health
+  void (async () => {
+    if (opts.storage === undefined) return;
+    const doc = opts.document;
+    if (!doc.location?.href) return;
+
+    // Load projects from storage index
+    const projStored = await opts.storage.get(storage_keys.projects_index).catch(() => ({} as Record<string, unknown>));
+    const projRaw = (projStored as Record<string, unknown>)[storage_keys.projects_index];
+    if (Array.isArray(projRaw) && projRaw.length > 1) {
+      state.projects = projRaw.map(rawToProjectEntry).filter((p) => p !== null) as ProjectEntry[];
+    }
+
+    // Load existing annotations for the current session
+    const scope = project_scope_from_url({ url: doc.location.href, title: doc.title });
+    const marksKey = session_marks_key(scope.project_id, scope.session_id);
+    const marksStored = await opts.storage.get(marksKey).catch(() => ({} as Record<string, unknown>));
+    const marksRaw = (marksStored as Record<string, unknown>)[marksKey];
+    if (Array.isArray(marksRaw) && marksRaw.length > 0) {
+      const loaded = (marksRaw as Annotation[]).filter((m) => m.lifecycle?.task_status !== "archived");
+      for (const ann of loaded) {
+        if (!annotations.has(ann.id)) {
+          annotations.set(ann.id, ann);
+          state.markCount += 1;
+          state.pins.push(annotationToPinRecord(ann, state.markCount, doc));
+        }
+      }
+      render();
+    }
+
+    // Passive daemon health check
+    const online = await probe_daemon_health().catch(() => false);
+    if (!online) {
+      state.daemonOnline = false;
+      // Only show fallback if there are local-only marks
+      if (state.pins.some((p) => p.sync === "local" || p.sync === "failed")) {
+        state.showFallback = true;
+      }
+      render();
+    }
+  })();
+
   return app;
+}
+
+function annotationToPinRecord(ann: Annotation, num: number, doc: Document): PinRecord {
+  const syncStatus = ann.sync.status;
+  const sync: PinRecord["sync"] = syncStatus === "synced"
+    ? "synced"
+    : syncStatus === "syncing" || syncStatus === "delete_pending"
+      ? "syncing"
+      : syncStatus === "failed"
+        ? "failed"
+        : "local";
+
+  const locatorStatus = ann.target.resolution.locator_status;
+  const loc: PinRecord["loc"] = locatorStatus === "lost"
+    ? "lost"
+    : locatorStatus === "drifted"
+      ? "drifted"
+      : "located";
+
+  const pos = ann.context.position;
+  const rect: DOMRect = {
+    left: pos.x, top: pos.y, right: pos.x + pos.width, bottom: pos.y + pos.height,
+    width: pos.width, height: pos.height, x: pos.x, y: pos.y, toJSON: () => ({}),
+  };
+
+  // Try to find the element live; fall back to a minimal stub
+  let element: Element;
+  try {
+    const found = doc.querySelector(ann.context.element.selector_preview);
+    element = found ?? stubElement(ann, doc);
+  } catch {
+    element = stubElement(ann, doc);
+  }
+
+  return {
+    id: ann.id,
+    num,
+    element,
+    rect,
+    kind: ann.intent.kind,
+    comment: ann.intent.comment,
+    task: ann.lifecycle.task_status === "resolved" ? "done" : "open",
+    loc,
+    confidence: ann.target.resolution.confidence,
+    sync,
+  };
+}
+
+function stubElement(ann: Annotation, doc: Document): Element {
+  const el = doc.createElement(ann.context.element.tag || "div");
+  if (ann.context.element.id) el.id = ann.context.element.id;
+  for (const cls of ann.context.element.classes ?? []) el.classList.add(cls);
+  return el;
+}
+
+function rawToProjectEntry(raw: unknown): ProjectEntry | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.project_id === "string" ? r.project_id : typeof r.id === "string" ? r.id : null;
+  if (id === null) return null;
+  const entry: ProjectEntry = {
+    id,
+    name: typeof r.name === "string" ? r.name : id,
+    path: typeof r.path === "string" ? r.path : typeof r.workspace_root_hash === "string" ? r.workspace_root_hash : "",
+  };
+  if (typeof r.workspace_root_hash === "string") entry.workspace_root_hash = r.workspace_root_hash;
+  if (typeof r.branch === "string") entry.branch = r.branch;
+  return entry;
 }
 
 function buildContext(element: Element, doc: Document): AnnotationContextDraft {

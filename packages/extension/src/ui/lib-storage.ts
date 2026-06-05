@@ -10,6 +10,7 @@
 import {
   storage_keys,
   LOUPE_SCHEMA_VERSION,
+  LOUPE_DEFAULT_PORT,
   type Annotation,
   type AnnotationPosition,
   type IntentKind,
@@ -18,9 +19,35 @@ import {
   type ResolveResult,
 } from "./schema.js";
 
+export { storage_keys } from "./schema.js";
+
 export type { Annotation } from "./schema.js";
 
 export type { IntentKind } from "./schema.js";
+
+export type ProjectEntry = {
+  id: string;
+  name: string;
+  path: string;
+  workspace_root_hash?: string;
+  branch?: string;
+};
+
+// Daemon lives on a fixed loopback port (local-first). The extension `baseUrl`
+// (chrome.runtime.getURL("")) points at extension assets, NOT the daemon, so the
+// health probe must target the loopback origin directly.
+export const LOUPE_DAEMON_BASE_URL = `http://127.0.0.1:${LOUPE_DEFAULT_PORT}` as const;
+
+export async function probe_daemon_health(base_url: string = LOUPE_DAEMON_BASE_URL): Promise<boolean> {
+  try {
+    const response = await fetch(`${base_url}/health`);
+    if (!response.ok) return false;
+    const payload = (await response.json()) as { ok?: boolean };
+    return payload.ok === true;
+  } catch {
+    return false;
+  }
+}
 
 export type AnnotationContextDraft = {
   element: {

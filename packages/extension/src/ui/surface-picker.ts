@@ -16,6 +16,10 @@ export type PickerHandlers = {
   onEsc: () => void;
 };
 
+export type PickerOpts = {
+  projectName?: string;
+};
+
 export type Picker = {
   modeEl: HTMLElement;
   frameEl: HTMLElement;
@@ -76,6 +80,7 @@ export function attachPicker(
   dom: Dom,
   t: Translate,
   handlers: PickerHandlers,
+  opts: PickerOpts = {},
 ): Picker {
   const prevFocus = doc.activeElement;
   let currentHover: HoverTarget | null = null;
@@ -92,10 +97,15 @@ export function attachPicker(
 
   // --- Mode indicator pill ---
   const dot = dom.el("span", { class: "lp-mode-dot" });
+  const modeChildren: HTMLElement[] = [dot, dom.el("span", { text: t("mode.pick") }), dom.el("kbd", { text: "Esc" })];
+  // Low-noise current-project context (§5): "· Project: app-web"
+  if (opts.projectName !== undefined && opts.projectName.length > 0) {
+    modeChildren.push(dom.el("span", { class: "lp-mode-proj", text: `Project: ${opts.projectName}` }));
+  }
   const modeEl = dom.el(
     "div",
     { class: "lp-mode-ind anim-pop", attrs: { role: "status", "aria-live": "polite" } },
-    [dot, dom.el("span", { text: t("mode.pick") }), dom.el("kbd", { text: "Esc" })],
+    modeChildren,
   );
 
   // --- Selection frame ---

@@ -13,6 +13,7 @@ export type DetailOpts = {
   onCopyMarkdown: (pinId: string) => Promise<boolean>;
   onClose: () => void;
   onViewAll: () => void;
+  onRetry?: (pinId: string) => void;
 };
 
 function makeTok(dom: Dom, glyph: string, label: string, cls: string): HTMLElement {
@@ -71,13 +72,22 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
 
   const copyBtn = dom.el("button", { class: "btn ghost", text: t("detail.copy") });
 
+  // Retry — only for sync-failed marks (re-queues; actual sync is daemon-driven)
+  const isFailed = pin.sync === "failed";
+  const retryBtn = isFailed
+    ? dom.el("button", { class: "btn ghost", text: t("fb.retry") })
+    : null;
+
   const deleteBtn = dom.el("button", {
     class: "btn danger",
     text: t("detail.del"),
   });
 
   const spacer = dom.el("span", { class: "spacer" });
-  const actionsEl = dom.el("div", { class: "d-actions" }, [doneBtn, copyBtn, spacer, deleteBtn]);
+  const actionChildren: HTMLElement[] = [doneBtn, copyBtn];
+  if (retryBtn !== null) actionChildren.push(retryBtn);
+  actionChildren.push(spacer, deleteBtn);
+  const actionsEl = dom.el("div", { class: "d-actions" }, actionChildren);
 
   const cls = ["detail", "card", ...(isDone ? ["is-done"] : [])].join(" ");
   const el = dom.el("div", {
@@ -116,6 +126,14 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
       }
     });
   });
+
+  // Retry sync — delegates to app (re-probes daemon, re-queues the mark)
+  if (retryBtn !== null) {
+    retryBtn.addEventListener("click", () => {
+      retryBtn.setAttribute("disabled", "");
+      opts.onRetry?.(pin.id);
+    });
+  }
 
   // Delete — two-step armed confirm
   let armed = false;
