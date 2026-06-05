@@ -41,7 +41,7 @@ function isInsideLoupeRoot(el: Element): boolean {
   return false;
 }
 
-function semanticLabel(el: Element): string {
+export function semanticLabel(el: Element): string {
   const tag = el.tagName.toLowerCase();
   const label =
     el.getAttribute("aria-label") ??

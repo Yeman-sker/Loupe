@@ -22,7 +22,7 @@ import {
   type ProjectEntry,
 } from "./lib-storage.js";
 import { renderReady } from "./surface-ready.js";
-import { attachPicker, type HoverTarget, type Picker } from "./surface-picker.js";
+import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "./surface-picker.js";
 import { renderIntent, type Viewport } from "./surface-intent.js";
 import { renderPin, type PinRecord, type RenderPinOpts } from "./surface-pin.js";
 import { renderDetail } from "./surface-detail.js";
@@ -510,7 +510,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           }
           render();
         },
-      });
+      }, semanticLabel(state.intent.element));
       detachIntent = host.mount(intentEl);
     }
 

@@ -27,13 +27,18 @@ export function renderIntent(
   targetRect: DOMRect,
   viewport: Viewport,
   handlers: IntentHandlers,
+  targetLabel = "",
 ): HTMLElement {
   let kind: IntentKind = "other";
   let escPendingDiscard = false;
   let escDiscardTimer: ReturnType<typeof setTimeout> | null = null;
 
   const pip = dom.el("span", { class: "lp-intent-pip" });
-  const targ = dom.el("div", { class: "lp-intent-targ mono" }, [pip]);
+  const targChildren: HTMLElement[] = [pip];
+  if (targetLabel.length > 0) {
+    targChildren.push(dom.el("span", { class: "lp-intent-target-label", text: targetLabel }));
+  }
+  const targ = dom.el("div", { class: "lp-intent-targ mono" }, targChildren);
 
   const textarea = dom.el("textarea", {
     class: "lp-intent-field",

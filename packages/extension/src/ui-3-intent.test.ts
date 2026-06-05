@@ -133,7 +133,7 @@ function makeFakeEvent(overrides: Record<string, unknown> = {}): Record<string, 
 
 describe("UI-3 · surface-intent", () => {
   // Helper: render and get all created elements in order
-  function renderAndTrack(handlers?: Partial<IntentHandlers>): {
+  function renderAndTrack(handlers?: Partial<IntentHandlers>, targetLabel = ""): {
     el: FakeEl;
     shell: FakeEl;
     textarea: FakeEl;
@@ -142,6 +142,7 @@ describe("UI-3 · surface-intent", () => {
     hintEl: FakeEl;
     discardEl: FakeEl;
     errorEl: FakeEl;
+    targetLabelEl: FakeEl | undefined;
     dispatch: (type: string, event?: Record<string, unknown>) => void;
     h: ReturnType<typeof makeHandlers>;
   } {
@@ -164,7 +165,7 @@ describe("UI-3 · surface-intent", () => {
     const dom = { el: el2 as unknown as import("./ui/dom.js").Dom["el"], clear: () => {} };
 
     const h = makeHandlers(handlers);
-    const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h) as unknown as FakeEl;
+    const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h, targetLabel) as unknown as FakeEl;
 
     // Created elements in order: pip, targ, textarea, submitBtn, nameSpan×6, dot×6, kindLabel, kindrail, row, intentShell, hintEl, discardEl, errorEl, hintKey, footEl, root
     // Let's identify by tag and position:
@@ -183,6 +184,7 @@ describe("UI-3 · surface-intent", () => {
     const hintEl = created.find((e) => e.classList.contains("lp-intent-hint")) as FakeEl;
     const discardEl = created.find((e) => e.classList.contains("lp-intent-discard")) as FakeEl;
     const errorEl = created.find((e) => e.classList.contains("lp-intent-error")) as FakeEl;
+    const targetLabelEl = created.find((e) => e.classList.contains("lp-intent-target-label"));
 
     void divs;
 
@@ -191,7 +193,7 @@ describe("UI-3 · surface-intent", () => {
       textarea.dispatch(type, makeFakeEvent(event));
     };
 
-    return { el: rootEl, shell, textarea, submitBtn, kindDots, hintEl, discardEl, errorEl, dispatch, h };
+    return { el: rootEl, shell, textarea, submitBtn, kindDots, hintEl, discardEl, errorEl, targetLabelEl, dispatch, h };
   }
 
   describe("render shell structure", () => {
@@ -201,6 +203,12 @@ describe("UI-3 · surface-intent", () => {
       assert.equal(el.classList.contains("lp-intent"), true);
       assert.equal(el.classList.contains("card"), false, "outer positioned root must not draw a second card border");
       assert.equal(shell.classList.contains("lp-intent-shell"), true);
+    });
+
+    it("renders the picked target label in the shell header", () => {
+      const { targetLabelEl } = renderAndTrack(undefined, 'button "Save changes"');
+
+      assert.equal(targetLabelEl?.textContent, 'button "Save changes"');
     });
   });
 
