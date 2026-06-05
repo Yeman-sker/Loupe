@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { DAEMON_PORT, FIXTURE_HOST, FIXTURE_PORT } from "../src/constants.js";
 import { prepExtension } from "./prep-ext.js";
+import { homeHashForHome } from "../../server/src/server.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,6 +19,38 @@ const repoRoot = path.resolve(__dirname, "../../..");
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+async function pickDaemonPort(preferredPort: number, expectedHomeHash: string): Promise<number> {
+  const probe = await probeDaemonPort(preferredPort);
+  if (probe === "free" || probe.home_hash === expectedHomeHash) return preferredPort;
+  return await freeLoopbackPort();
+}
+
+async function probeDaemonPort(port: number): Promise<"free" | { home_hash?: unknown }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    const body = (await res.json().catch(() => null)) as { home_hash?: unknown } | null;
+    return body ?? {};
+  } catch {
+    return "free";
+  }
+}
+
+async function freeLoopbackPort(): Promise<number> {
+  const server = http.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : undefined;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (typeof port !== "number") throw new Error("Could not allocate a loopback port for Loupe daemon");
+  return port;
+}
+
 export interface DaemonHandle {
   port: number;
   baseUrl: string;
@@ -26,7 +59,8 @@ export interface DaemonHandle {
 }
 
 export async function startDaemon(opts: { home: string; port?: number }): Promise<DaemonHandle> {
-  const port = opts.port ?? DAEMON_PORT;
+  const expectedHomeHash = await homeHashForHome(opts.home);
+  const port = opts.port ?? await pickDaemonPort(DAEMON_PORT, expectedHomeHash);
   const cliPath = path.join(repoRoot, "packages/server/src/cli.ts");
   // Run the daemon under tsx. The `--import tsx` bare specifier resolves relative
   // to cwd, so cwd must be a package that has tsx installed (the e2e package does;
@@ -48,7 +82,9 @@ export async function startDaemon(opts: { home: string; port?: number }): Promis
   const baseUrl = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 15_000;
 
-  // Wait for /health to return 200.
+  // Wait for this daemon's /health to return 200. A stale daemon can already own
+  // the fixed e2e port; require the requested home hash so we do not pair a new
+  // token file with an old process.
   let healthy = false;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
@@ -56,7 +92,8 @@ export async function startDaemon(opts: { home: string; port?: number }): Promis
     }
     try {
       const res = await fetch(`${baseUrl}/health`);
-      if (res.status === 200) {
+      const body = (await res.json().catch(() => null)) as { home_hash?: unknown } | null;
+      if (res.status === 200 && body?.home_hash === expectedHomeHash) {
         healthy = true;
         break;
       }
