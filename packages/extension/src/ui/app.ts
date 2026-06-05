@@ -85,12 +85,17 @@ type AppState = {
 
 // CSS for UI-1 surfaces — injected into shadow root alongside host.ts BASE_CSS.
 const SURFACES_CSS = `
-/* Ready panel */
-.lp-ready{position:fixed;right:20px;bottom:20px;padding:14px 16px;
-  display:flex;align-items:center;gap:10px;pointer-events:auto;width:auto}
-.lp-ready-brand{display:flex;align-items:center;gap:7px;color:var(--ink-2)}
-.lp-ready-wm{font-size:14px;font-weight:600;letter-spacing:-.02em;color:var(--ink)}
-.lp-ready-pick{padding:8px 14px}
+/* Ready HUD — bottom-left launcher pills */
+.lp-ready{position:fixed;left:20px;bottom:20px;
+  display:flex;align-items:center;gap:8px;pointer-events:auto;width:auto}
+.lp-pill{display:inline-flex;align-items:center;gap:9px;font:600 12px/1 var(--font);color:var(--ink);
+  background:var(--surface);border:var(--hair) solid var(--hairline);padding:10px 14px;border-radius:999px;
+  box-shadow:var(--shadow);cursor:pointer;
+  transition:transform var(--dur-fast) var(--ease),box-shadow var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+.lp-pill:hover{transform:translateY(-1px);box-shadow:var(--shadow-pop);border-color:var(--hairline-2)}
+.lp-pill .ct{font:700 10px/1 var(--mono);color:var(--iris-fg);background:var(--iris);padding:3px 6px;border-radius:999px}
+.lp-pill kbd{margin-left:2px}
+.lp-pill-icon{display:inline-flex;align-items:center}
 
 /* Mode indicator */
 .lp-mode-ind{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);

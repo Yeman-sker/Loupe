@@ -20,6 +20,8 @@ const DICT: Dict = {
 
   "mode.pick": ["正在选取元素", "Picking element"],
 
+  "hud.start": ["选取元素", "Pick element"],
+
   "intent.ph": ["告诉 agent 你想改什么…", "Tell the agent what to change…"],
   "intent.hint": ["先写一句任务", "Write a task first"],
   "intent.kind": ["类别", "KIND"],

@@ -265,8 +265,7 @@ describe("UI-1 · surface host mount → update → unmount", () => {
 
     // UI-1 ready panel (not the UI-0 smoke surface)
     const card = present(elementChildren(wrapper)[0]);
-    assert.ok(hasClass(card, "lp-ready"), "ready panel card is rendered");
-    assert.ok(hasClass(card, "card"), "ready panel uses card class");
+    assert.ok(hasClass(card, "lp-ready"), "ready HUD is rendered");
 
     app.unmount();
     assert.equal(doc.getElementById(SURFACE_ROOT_ID), null);
@@ -284,13 +283,13 @@ describe("UI-1 · surface host mount → update → unmount", () => {
     const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
     assert.equal(wrapper.dataset.theme, "dark", "stored theme pref applied on mount");
 
-    // The ready panel has the start-picking button (EN label because lang: "en")
+    // The ready HUD has the pick-element pill (EN label because lang: "en")
     const card = present(elementChildren(wrapper)[0]);
-    assert.ok(hasClass(card, "lp-ready"), "ready panel present");
+    assert.ok(hasClass(card, "lp-ready"), "ready HUD present");
     const pickBtn = present(
-      descendants(card).find((e) => e.tagName === "button" && e.getAttribute("aria-label") === "Start picking"),
+      descendants(card).find((e) => e.tagName === "button" && e.getAttribute("aria-label") === "Pick element"),
     );
-    assert.ok(pickBtn !== undefined, "start-picking button rendered with correct EN aria-label");
+    assert.ok(pickBtn !== undefined, "pick-element pill rendered with correct EN aria-label");
   });
 
   it("unauthorized origin renders only the host-authorization CTA (Surface 1), dismissable", async () => {

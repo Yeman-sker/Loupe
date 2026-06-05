@@ -1,7 +1,8 @@
-// Surface 1 (minimal) — "Ready" panel shown when extension is active on an
-// authorized page. Floating bottom-right card with Loupe brand + Start picking.
-// This surface is hidden (display:none) when picking is active, and replaced by
-// the intent panel when an element is selected.
+// Surface 1 (minimal) — "Ready" HUD shown when the extension is active on an
+// authorized page. Floating bottom-left launcher with two pills: "选取元素"
+// (Pick element, ⌥L) and "查看全部" (View all, with mark count). Hidden
+// (display:none) while picking is active, and replaced by the intent panel when
+// an element is selected.
 
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
@@ -12,47 +13,39 @@ export type ReadyHandlers = {
 };
 
 export function renderReady(dom: Dom, t: Translate, handlers: ReadyHandlers, picking: boolean, markCount?: number): HTMLElement {
-  const loupeMark = dom.el("svg", {
-    attrs: {
-      width: "20",
-      height: "20",
-      viewBox: "0 0 20 20",
-      fill: "none",
-      "aria-hidden": "true",
-    },
-  });
-  loupeMark.innerHTML =
-    '<circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>' +
-    '<line x1="10" y1="3" x2="10" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
-    '<line x1="10" y1="15" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
-    '<line x1="3" y1="10" x2="5" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
-    '<line x1="15" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
-    '<circle cx="10" cy="10" r="2.5" fill="var(--iris)"/>';
-
-  const brand = dom.el("div", { class: "lp-ready-brand" }, [
-    loupeMark,
-    dom.el("span", { class: "lp-ready-wm", text: "Loupe" }),
-  ]);
+  // SVG set via innerHTML on a wrapper so the HTML parser namespaces it correctly
+  // (dom.el → createElement("svg") would be HTML-namespaced and not render).
+  const reticle = dom.el("span", { class: "lp-pill-icon", attrs: { "aria-hidden": "true" } });
+  reticle.innerHTML =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="7.5"/>' +
+    '<path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" stroke-linecap="round"/>' +
+    "</svg>";
 
   const pickBtn = dom.el("button", {
-    class: "btn primary lp-ready-pick",
-    attrs: { type: "button", "aria-label": t("proj.confirm") },
-    text: t("proj.confirm"),
+    class: "lp-pill lp-ready-pick",
+    attrs: { type: "button", "aria-label": t("hud.start") },
     on: { click: handlers.onPick },
-  });
+  }, [
+    reticle,
+    dom.el("span", { text: t("hud.start") }),
+    dom.el("kbd", { text: "⌥L" }),
+  ]);
 
-  const children: HTMLElement[] = [brand, pickBtn];
+  const children: HTMLElement[] = [pickBtn];
   if (handlers.onViewAll !== undefined && (markCount ?? 0) > 0) {
     const viewAllBtn = dom.el("button", {
-      class: "btn ghost lp-ready-viewall",
+      class: "lp-pill lp-ready-viewall",
       attrs: { type: "button" },
-      text: t("detail.viewall"),
       on: { click: handlers.onViewAll },
-    });
+    }, [
+      dom.el("span", { text: t("detail.viewall") }),
+      dom.el("span", { class: "ct mono", text: String(markCount ?? 0) }),
+    ]);
     children.push(viewAllBtn);
   }
 
-  const el = dom.el("div", { class: "card lp-ready anim-pop" }, children);
+  const el = dom.el("div", { class: "lp-ready anim-pop" }, children);
   if (picking) el.style.display = "none";
   return el;
 }
