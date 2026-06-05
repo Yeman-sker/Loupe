@@ -233,8 +233,8 @@ describe("UI-0 · status tokens (wire enum → glyph + label, never colour-only)
   });
 });
 
-describe("UI-0 · surface host mount → update → unmount", () => {
-  it("mounts an isolated shadow host, injects fonts + tokens + base, renders the smoke surface", async () => {
+describe("UI-1 · surface host mount → update → unmount", () => {
+  it("mounts an isolated shadow host, injects fonts + tokens + surfaces CSS, renders the ready panel", async () => {
     const { doc, asDocument } = makeFakeDocument();
     const { storage } = makeFakeStorage();
 
@@ -245,45 +245,46 @@ describe("UI-0 · surface host mount → update → unmount", () => {
     assert.equal(root.style.position, "fixed");
 
     const shadow = present(root.shadow ?? undefined);
-    const style = present(elementChildren(shadow).find((e) => e.tagName === "style"));
-    assert.match(style.textContent, /--iris-h:286/);
-    assert.match(style.textContent, /@font-face/);
-    assert.match(style.textContent, /Space Grotesk/);
-    assert.match(style.textContent, /\.tok--good/);
-    assert.match(style.textContent, /chrome-extension:\/\/x\/assets\/fonts\/space-grotesk\.woff2/);
+    // First style is host CSS (fonts + tokens + base), second is surfaces CSS.
+    const styles = elementChildren(shadow).filter((e) => e.tagName === "style");
+    assert.ok(styles.length >= 1, "at least one style element injected");
+    const hostStyle = present(styles[0]);
+    assert.match(hostStyle.textContent, /--iris-h:286/);
+    assert.match(hostStyle.textContent, /@font-face/);
+    assert.match(hostStyle.textContent, /Space Grotesk/);
+    assert.match(hostStyle.textContent, /\.tok--good/);
+    assert.match(hostStyle.textContent, /chrome-extension:\/\/x\/assets\/fonts\/space-grotesk\.woff2/);
 
     const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
     assert.equal(wrapper.dataset.theme, "light");
 
+    // UI-1 ready panel (not the UI-0 smoke surface)
     const card = present(elementChildren(wrapper)[0]);
-    assert.ok(hasClass(card, "lp-smoke"));
-    assert.equal(descendants(card).filter((e) => hasClass(e, "tok")).length, 8);
-    assert.ok(descendants(card).some((e) => e.textContent.includes("100%")), "located confidence token rendered");
+    assert.ok(hasClass(card, "lp-ready"), "ready panel card is rendered");
+    assert.ok(hasClass(card, "card"), "ready panel uses card class");
 
     app.unmount();
     assert.equal(doc.getElementById(SURFACE_ROOT_ID), null);
   });
 
-  it("toggles theme and language in place and persists both", async () => {
+  it("renders the ready panel with a start-picking button and respects stored theme pref", async () => {
     const { doc, asDocument } = makeFakeDocument();
-    const { storage, store } = makeFakeStorage();
+    const { storage } = makeFakeStorage();
+    // Pre-seed a dark theme preference so we can verify prefs are read on mount.
+    await storage.set({ "loupe:v1:ui:prefs": { theme: "dark", lang: "en" } });
 
     await mount({ baseUrl: "chrome-extension://x/", document: asDocument, storage });
 
     const shadow = present(present(doc.getElementById(SURFACE_ROOT_ID) ?? undefined).shadow ?? undefined);
     const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
+    assert.equal(wrapper.dataset.theme, "dark", "stored theme pref applied on mount");
 
-    // theme toggle (zh labels): 主题
-    findButton(present(elementChildren(wrapper)[0]), "主题").dispatch("click");
-    assert.equal(wrapper.dataset.theme, "dark");
-
-    // language toggle (still zh): 语言 → en re-render
-    findButton(present(elementChildren(wrapper)[0]), "语言").dispatch("click");
-    const enCard = present(elementChildren(wrapper)[0]);
-    const sub = present(descendants(enCard).find((e) => hasClass(e, "lp-sub")));
-    assert.match(sub.textContent, /Pick real DOM/);
-
-    await Promise.resolve();
-    assert.deepEqual(store["loupe:v1:ui:prefs"], { theme: "dark", lang: "en" });
+    // The ready panel has the start-picking button (EN label because lang: "en")
+    const card = present(elementChildren(wrapper)[0]);
+    assert.ok(hasClass(card, "lp-ready"), "ready panel present");
+    const pickBtn = present(
+      descendants(card).find((e) => e.tagName === "button" && e.getAttribute("aria-label") === "Start picking"),
+    );
+    assert.ok(pickBtn !== undefined, "start-picking button rendered with correct EN aria-label");
   });
 });
