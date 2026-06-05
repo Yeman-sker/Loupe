@@ -9,6 +9,16 @@
     const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
     if (!isAuthorizedOriginResponse(response) || document.getElementById(ROOT_ID)) return;
     installContentRoot();
+    loadSurfaceRuntime();
+  }
+
+  function loadSurfaceRuntime() {
+    if (typeof chrome?.runtime?.getURL !== "function") return;
+    try {
+      void import(chrome.runtime.getURL("dist/ui/app.js"))
+        .then((mod) => mod.mount({ baseUrl: chrome.runtime.getURL(""), document, storage: chrome.storage && chrome.storage.local }))
+        .catch(() => {});
+    } catch (_e) {}
   }
 
   function installContentRoot() {

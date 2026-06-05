@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {

@@ -19,5 +19,11 @@
       "js": ["src/content.js"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/ui/*.js", "dist/ui/*.js.map", "assets/fonts/*.woff2"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
   ]
 }

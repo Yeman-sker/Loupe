@@ -17,6 +17,36 @@
 
 > **编号歧义提醒：** 这里的“阶段 0–5”是本项目的**迭代阶段**（= 里程碑 M0–M5）。PRD §4.4 中的 “Phase 2 / 3 / 4” 指**发布后的后续路线**，与本目录的阶段 2/3/4 **不是同一回事**（见文末）。
 
+## UI 实现阶段（in-page surfaces 实现轨）
+
+> 本节是**独立于 M0–M5 里程碑轴**的一条 **UI 实现轨**：把 `docs/ui-ux/` 锁定的 8 个 in-page surface 设计（“Optical Instrument” 视觉系统）在 `packages/extension` 内逐步建成。构建/渲染方式（tsc-emit + 原生 DOM + Shadow DOM，不打包、不引入框架）见 [ADP 20260604](../adp-20260604-extension-ui-vanilla-tsc-shadow-dom.md)。
+
+**推进策略：golden-path 薄切片先行** —— 先用每个 surface 的最小形态打通 `host auth → 拾取 → 写意图 → 保存为 pin → 写入真实本地存储` 的端到端闭环，再按 surface 扩展广度与状态，最后做 a11y / 动效 / 性能收口。
+
+| UI 阶段 | 覆盖 surface | 实现的里程碑 | 文件 |
+|---|---|---|---|
+| UI-0 | 跨切面基座：构建管线 / token / 字体 / Shadow host / 渲染核心 | M2 基座 | [phase-ui-0-foundation-runtime.md](./phase-ui-0-foundation-runtime.md) |
+| UI-1 | 1 host auth · 3 picker · 4 intent · 5 pin（最小形态，端到端） | M2 golden path | [phase-ui-1-golden-path-slice.md](./phase-ui-1-golden-path-slice.md) |
+| UI-2 | 3 picker / selection frame（全量） | M2 | [phase-ui-2-picker-selection-frame.md](./phase-ui-2-picker-selection-frame.md) |
+| UI-3 | 4 intent input + kind rail（全量） | M2 功能 + M5 形态 | [phase-ui-3-intent-input.md](./phase-ui-3-intent-input.md) |
+| UI-4 | 5 pin（全状态 / 定位） | M2 功能 + M5 形态 | [phase-ui-4-pin.md](./phase-ui-4-pin.md) |
+| UI-5 | 6 pin detail · 7 view all（接 resolve/delete/copy） | M2 | [phase-ui-5-pin-detail-view-all.md](./phase-ui-5-pin-detail-view-all.md) |
+| UI-6 | 2 project chooser · 8 page-level fallback + sync/locator 状态映射 | M2 surface + 反映 M3/M4 状态 | [phase-ui-6-project-fallback-status.md](./phase-ui-6-project-fallback-status.md) |
+| UI-7 | 全 surface a11y / 动效 / 性能收口 | M5 | [phase-ui-7-a11y-motion-perf.md](./phase-ui-7-a11y-motion-perf.md) |
+
+UI 实现轨依赖链（UI-1 之后 UI-2 / UI-3 / UI-4 可并行）：
+
+```
+UI-0 基座
+  └─→ UI-1 golden-path 薄切片
+        ├─→ UI-2 picker 全量 ───────────────────────────────────────────────┐
+        ├─→ UI-3 intent 全量 ───────────────────────────────────────────────┤
+        └─→ UI-4 pin 全量 ─→ UI-5 detail + view all ─→ UI-6 project/fallback/状态映射 ─┤
+                                                                                       └─→ UI-7 a11y/动效/性能收口
+```
+
+> **双轴编号澄清：** `docs/phases/` 现在有两条编号轴 —— **M 轴（阶段 0–5 = 里程碑 M0–M5）** 是垂直信任闭环的迭代阶段；**UI 轴（UI-0–UI-7）** 是 in-page surfaces 的实现轨。UI 轨**实现的是 M2 描述的功能 surface 与 M5 描述的视觉/动效打磨，不重定义里程碑语义**：surface 的本地存储 / 拾取 / locator 依赖 M0–M2；daemon 在线同步引擎仍属 M3、活体漂移恢复引擎仍属 M4（UI 只忠实呈现其状态）；marketplace / CLI / onboarding 安装流等非 in-page 部分仍属 M5。
+
 ## 信任闭环与依赖链
 
 MVP 只服务一条信任闭环：
