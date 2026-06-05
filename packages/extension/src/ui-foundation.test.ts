@@ -105,6 +105,9 @@ class FakeDocument {
   getElementById(id: string): FakeElement | null {
     return findById(this.documentElement, id);
   }
+  // Stubs so app.ts ⌥L global-key listener can attach without error
+  addEventListener(_type: string, _listener: unknown): void {}
+  removeEventListener(_type: string, _listener: unknown): void {}
 }
 
 function findById(node: FakeElement, id: string): FakeElement | null {

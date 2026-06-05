@@ -115,6 +115,14 @@ const SURFACES_CSS = `
 .lp-kind-btn:hover{transform:scale(1.25)}
 .lp-kind-btn--sel{box-shadow:0 0 0 2.5px color-mix(in srgb,var(--k,var(--iris)) 28%,transparent)}
 
+/* Breadcrumb */
+.lp-breadcrumb{position:absolute;display:inline-flex;align-items:center;gap:5px;
+  font:500 11px/1 var(--font);color:var(--ink-2);background:var(--surface);
+  border:var(--hair) solid var(--hairline);padding:6px 10px;border-radius:999px;
+  box-shadow:var(--shadow);pointer-events:none;z-index:2;white-space:nowrap}
+.lp-breadcrumb i{color:var(--ink-3);font-style:normal}
+.lp-breadcrumb b{color:var(--ink);font-weight:600}
+
 /* Pin */
 .lp-pin{position:absolute;width:24px;height:24px;
   transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
@@ -207,9 +215,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         },
       });
       currentPicker = picker;
-      // Mount mode indicator and selection frame into the host wrapper
+      // Mount mode indicator, selection frame, and breadcrumb into the host wrapper
       host.mount(picker.modeEl);
       host.mount(picker.frameEl);
+      host.mount(picker.breadcrumbEl);
     }
 
     // Intent panel
@@ -294,8 +303,24 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     }
   }
 
+  // ⌥L global toggle: start / stop picking from anywhere on the page
+  function onGlobalKey(e: KeyboardEvent): void {
+    if (e.altKey && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      if (state.picking) {
+        state.picking = false;
+        state.hover = null;
+        render();
+      } else if (state.intent === null) {
+        startPicking();
+      }
+    }
+  }
+  opts.document.addEventListener("keydown", onGlobalKey);
+
   const app: SurfaceApp = {
     unmount: () => {
+      opts.document.removeEventListener("keydown", onGlobalKey);
       clearSurfaces();
       host.destroy();
     },
