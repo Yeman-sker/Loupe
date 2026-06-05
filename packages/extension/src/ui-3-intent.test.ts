@@ -194,6 +194,16 @@ describe("UI-3 · surface-intent", () => {
     return { el: rootEl, shell, textarea, submitBtn, kindDots, hintEl, discardEl, errorEl, dispatch, h };
   }
 
+  describe("render shell structure", () => {
+    it("keeps card styling on the shell only, not the positioned root", () => {
+      const { el, shell } = renderAndTrack();
+
+      assert.equal(el.classList.contains("lp-intent"), true);
+      assert.equal(el.classList.contains("card"), false, "outer positioned root must not draw a second card border");
+      assert.equal(shell.classList.contains("lp-intent-shell"), true);
+    });
+  });
+
   describe("submit button state", () => {
     it("is disabled initially (empty textarea)", () => {
       const { submitBtn } = renderAndTrack();

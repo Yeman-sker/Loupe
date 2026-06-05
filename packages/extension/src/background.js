@@ -19,7 +19,7 @@ chrome.runtime.onInstalled.addListener(() => {
 // works here. On grant we reload the tab so the content script re-runs authorized.
 if (chrome.action && chrome.action.onClicked) {
   chrome.action.onClicked.addListener((tab) => {
-    void handleActionClick(tab);
+    void handleActionClick(tab).catch(() => {});
   });
 }
 
@@ -30,7 +30,12 @@ async function handleActionClick(tab) {
   // permissions.request must be the first permission API called from the
   // browser-action gesture. Awaiting permissions.contains first can consume the
   // transient user gesture, so Chrome rejects the request and no prompt appears.
-  const granted = await chrome.permissions.request({ origins });
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins });
+  } catch (_e) {
+    return;
+  }
   if (granted && typeof tab?.id === "number") {
     try {
       await chrome.tabs.reload(tab.id);

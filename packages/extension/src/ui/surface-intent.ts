@@ -218,7 +218,7 @@ export function renderIntent(
 
   const row = dom.el("div", { class: "lp-intent-row" }, [textarea, submitBtn]);
   const intentShell = dom.el("div", { class: "lp-intent-shell" }, [targ, row, kindrail]);
-  const el = dom.el("div", { class: "lp-intent card anim-pop" }, [
+  const el = dom.el("div", { class: "lp-intent anim-pop" }, [
     intentShell,
     hintEl,
     discardEl,
