@@ -7,16 +7,20 @@
 
   async function bootstrapAuthorizedContent() {
     const response = await runtimeMessage({ type: MESSAGE_GET_AUTH, origin: location.origin });
-    if (!isAuthorizedOriginResponse(response) || document.getElementById(ROOT_ID)) return;
-    installContentRoot();
-    loadSurfaceRuntime();
+    if (document.getElementById(ROOT_ID)) return;
+    const authorized = isAuthorizedOriginResponse(response);
+    // Inert auth marker stays authorized-only (unchanged security posture). The
+    // surface runtime loads in both states; when unauthorized it shows only the
+    // host-authorization CTA, which routes the grant to the browser action.
+    if (authorized) installContentRoot();
+    loadSurfaceRuntime(authorized);
   }
 
-  function loadSurfaceRuntime() {
+  function loadSurfaceRuntime(authorized) {
     if (typeof chrome?.runtime?.getURL !== "function") return;
     try {
       void import(chrome.runtime.getURL("dist/ui/app.js"))
-        .then((mod) => mod.mount({ baseUrl: chrome.runtime.getURL(""), document, storage: chrome.storage && chrome.storage.local }))
+        .then((mod) => mod.mount({ baseUrl: chrome.runtime.getURL(""), document, storage: chrome.storage && chrome.storage.local, authorized }))
         .catch(() => {});
     } catch (_e) {}
   }

@@ -111,7 +111,10 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
 
     assert.match(source, /if \(!canBootstrapContentRuntime\(\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
     assert.match(bootstrap_body, /runtimeMessage\(\{ type: MESSAGE_GET_AUTH, origin: location\.origin \}\)/);
-    assert.match(bootstrap_body, /if \(!isAuthorizedOriginResponse\(response\) \|\| document\.getElementById\(ROOT_ID\)\) return;/);
+    // Inert marker is installed only when authorized; the surface runtime loads
+    // in both states (unauthorized → host-authorization CTA only).
+    assert.match(bootstrap_body, /const authorized = isAuthorizedOriginResponse\(response\)/);
+    assert.match(bootstrap_body, /if \(authorized\) installContentRoot\(\)/);
     assert.match(install_body, /root\.hidden = true/);
     assert.match(install_body, /root\.dataset\.exposesTokenToPage = "false"/);
     assert.match(install_body, /root\.dataset\.exposesPageWindowApi = "false"/);

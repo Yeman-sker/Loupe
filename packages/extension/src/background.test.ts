@@ -151,6 +151,25 @@ describe("background origin authorization", () => {
     });
   });
 
+  it("requests toolbar-origin permission without a preflight contains check", async () => {
+    const requested: string[][] = [];
+
+    const decision = await request_active_tab_origin_authorization(
+      { id: 7, url: "https://app.example.test/dashboard" },
+      async () => {
+        throw new Error("contains should not run before toolbar permission request");
+      },
+      async (origins) => {
+        requested.push([...origins]);
+        return true;
+      },
+    );
+
+    assert.deepEqual(requested, [["https://app.example.test/*"]]);
+    assert.equal(decision.ok, true);
+    assert.equal(decision.authorized, true);
+  });
+
   it("requests current active tab origin permission", async () => {
     const requested: string[][] = [];
     const reloaded: number[] = [];

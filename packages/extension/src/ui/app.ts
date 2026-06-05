@@ -29,6 +29,7 @@ import { renderDetail } from "./surface-detail.js";
 import { renderViewAll } from "./surface-view-all.js";
 import { renderProjectChooser } from "./surface-project-chooser.js";
 import { renderFallback } from "./surface-fallback.js";
+import { renderHostAuth } from "./surface-host-auth.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -39,6 +40,11 @@ export type MountOptions = {
   baseUrl: string;
   document: Document;
   storage?: UiStorage;
+  // Whether the page's origin already holds host permission. When false, the
+  // surface runtime shows only the host-authorization CTA (Surface 1) and gates
+  // off everything else until the user grants via the toolbar action + reload.
+  // Defaults to true so existing callers/tests keep the authorized golden path.
+  authorized?: boolean;
 };
 
 export type SurfaceApp = {
@@ -50,6 +56,8 @@ const PREFS_KEY = "loupe:v1:ui:prefs";
 type Prefs = { theme: Theme; lang: Lang };
 
 type AppState = {
+  authorized: boolean;
+  showHostAuth: boolean;
   picking: boolean;
   hover: HoverTarget | null;
   intent: HoverTarget | null;
@@ -285,6 +293,25 @@ const SURFACES_CSS = `
 .lp-pin-tip-sep{color:var(--ink-3)}
 .lp-pin:hover .lp-pin-tip,.lp-pin:focus-visible .lp-pin-tip{opacity:1;transform:translateX(-50%) translateY(0)}
 
+/* Host authorization CTA — Surface 1 (ported from prototype .cta). The scrim +
+   2px veil is the one place blur is intentional (modal gate), per the spec. */
+.center-wrap.lp-auth{pointer-events:auto;
+  background:color-mix(in srgb,var(--paper) 55%,transparent);backdrop-filter:blur(2px)}
+.cta{width:316px;padding:22px}
+.cta:focus-visible{outline:none}
+.cta-brand{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+.cta-mark{display:inline-flex}
+.cta-mark svg{display:block;flex:none}
+.cta-brand .wm{font-size:16px;font-weight:600;letter-spacing:-.02em;color:var(--ink)}
+.cta h3{font-size:16px;font-weight:600;letter-spacing:-.02em;margin:0 0 7px;color:var(--ink)}
+.cta p{font-size:13px;line-height:1.55;color:var(--ink-2);margin:0 0 14px}
+.cta-hint{display:flex;align-items:center;gap:9px;margin:0 0 16px;padding:9px 11px;
+  font:500 12px/1.45 var(--font);color:var(--ink-2);
+  background:var(--iris-veil-2);border-radius:var(--r-md);
+  border:var(--hair) solid color-mix(in srgb,var(--iris) 30%,var(--hairline))}
+.cta-hint .arrow{font-weight:700;color:var(--iris);flex:none}
+.cta .cta-row{display:flex;align-items:center;gap:10px}
+
 /* Project chooser — Surface 2 */
 .center-wrap{position:fixed;inset:0;display:grid;place-items:center;z-index:8;pointer-events:none}
 .center-wrap>.chooser{pointer-events:auto}
@@ -336,7 +363,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   surfaceStyle.textContent = SURFACES_CSS;
   host.shadow.append(surfaceStyle);
 
+  const authorized = opts.authorized !== false;
   const state: AppState = {
+    authorized,
+    showHostAuth: !authorized,
     picking: false,
     hover: null,
     intent: null,
@@ -362,6 +392,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachViewAll: (() => void) | null = null;
   let detachChooser: (() => void) | null = null;
   let detachFallback: (() => void) | null = null;
+  let detachHostAuth: (() => void) | null = null;
   const pinDetachers: Array<() => void> = [];
   let prevIntentFocus: Element | null = null;
 
@@ -398,6 +429,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachFallback();
       detachFallback = null;
     }
+    if (detachHostAuth !== null) {
+      detachHostAuth();
+      detachHostAuth = null;
+    }
     for (const d of pinDetachers) d();
     pinDetachers.length = 0;
   }
@@ -407,6 +442,20 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     const doc = opts.document;
 
     clearSurfaces();
+
+    // Unauthorized origin: show only the host-authorization CTA (Surface 1).
+    // The actual grant happens via the toolbar action + tab reload, after which
+    // the content script re-mounts with authorized:true and the full flow runs.
+    if (!state.authorized) {
+      if (state.showHostAuth) {
+        const authEl = renderHostAuth(host.dom, {
+          t,
+          onDismiss: () => { state.showHostAuth = false; render(); },
+        });
+        detachHostAuth = host.mount(authEl);
+      }
+      return;
+    }
 
     // Always mount the ready panel (hidden during picking)
     const readyEl = renderReady(host.dom, t, {
@@ -553,6 +602,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   }
 
   function startPicking(): void {
+    if (!state.authorized) return;
     // Show project chooser when multiple projects exist and none selected yet
     if (state.projects.length > 1 && state.selectedProject === null) {
       state.showProjectChooser = true;
@@ -831,6 +881,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   // ⌥L global toggle: start / stop picking from anywhere on the page
   function onGlobalKey(e: KeyboardEvent): void {
+    if (!state.authorized) return;
     if (e.altKey && (e.key === "l" || e.key === "L")) {
       e.preventDefault();
       if (state.picking) {
@@ -860,6 +911,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   // Async init: load stored pins, discover projects, check daemon health
   void (async () => {
+    if (!state.authorized) return;
     if (opts.storage === undefined) return;
     const doc = opts.document;
     if (!doc.location?.href) return;

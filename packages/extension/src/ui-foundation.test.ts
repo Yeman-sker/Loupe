@@ -290,4 +290,29 @@ describe("UI-1 · surface host mount → update → unmount", () => {
     );
     assert.ok(pickBtn !== undefined, "start-picking button rendered with correct EN aria-label");
   });
+
+  it("unauthorized origin renders only the host-authorization CTA (Surface 1), dismissable", async () => {
+    const { doc, asDocument } = makeFakeDocument();
+    const { storage } = makeFakeStorage();
+
+    await mount({ baseUrl: "chrome-extension://x/", document: asDocument, storage, authorized: false });
+
+    const shadow = present(present(doc.getElementById(SURFACE_ROOT_ID) ?? undefined).shadow ?? undefined);
+    const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
+
+    // Only the auth CTA is mounted — no ready panel, no picker, when unauthorized.
+    const mounted = elementChildren(wrapper);
+    assert.equal(mounted.length, 1, "exactly one surface mounted when unauthorized");
+    const scrim = present(mounted[0]);
+    assert.ok(hasClass(scrim, "center-wrap") && hasClass(scrim, "lp-auth"), "auth scrim wrapper rendered");
+    const cta = present(elementChildren(scrim).find((e) => hasClass(e, "cta")));
+    assert.ok(hasClass(cta, "card"), "CTA uses the card primitive");
+    assert.equal(cta.getAttribute("role"), "dialog");
+    assert.ok(!descendants(wrapper).some((e) => hasClass(e, "lp-ready")), "no ready panel when unauthorized");
+
+    // "Not now" (auth.not, zh default) dismisses the card → overlay empties.
+    const notNow = present(descendants(cta).find((e) => e.tagName === "button" && e.textContent === "以后再说"));
+    notNow.dispatch("click");
+    assert.equal(elementChildren(wrapper).length, 0, "CTA dismissed, nothing else shown");
+  });
 });

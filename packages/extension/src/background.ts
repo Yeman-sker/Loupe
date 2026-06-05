@@ -140,13 +140,27 @@ export async function request_origin_authorization(
 
 export async function request_active_tab_origin_authorization(
   tab: ChromeTabLike,
-  contains: OriginPermissionProbe,
+  _contains: OriginPermissionProbe,
   request: OriginPermissionProbe,
   reload_tab?: (tab_id: number) => Promise<void>,
 ): Promise<AuthorizationDecision> {
-  const decision = await request_origin_authorization({}, tab.url === undefined ? {} : { tab: { url: tab.url } }, contains, request);
-  if (decision.ok && decision.authorized && tab.id !== undefined && reload_tab !== undefined) await reload_tab(tab.id);
-  return decision;
+  const origin = origin_from_message_or_sender({}, tab.url === undefined ? {} : { tab: { url: tab.url } });
+  if (origin === undefined) return { ok: false, authorized: false, error: "No page origin available" };
+  const pattern = origin_permission_pattern(origin);
+  if (pattern === undefined) return { ok: false, authorized: false, error: `Unsupported page origin: ${origin}`, origin };
+
+  try {
+    // Browser-action grant path: call request directly. Probing with contains()
+    // first can consume the transient toolbar-click gesture in Chrome.
+    const authorized = await request([pattern]);
+    const decision: AuthorizationDecision = authorized
+      ? { ok: true, authorized: true, origin, origin_pattern: pattern }
+      : { ok: true, authorized: false, origin, origin_pattern: pattern, error: "Origin permission request was denied" };
+    if (decision.ok && decision.authorized && tab.id !== undefined && reload_tab !== undefined) await reload_tab(tab.id);
+    return decision;
+  } catch (error) {
+    return { ok: false, authorized: false, error: error_message(error), origin };
+  }
 }
 
 export async function request_current_tab_origin_authorization(

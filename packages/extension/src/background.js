@@ -14,6 +14,41 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Toolbar action is the host-permission grant entry point. action.onClicked is a
+// valid MV3 user gesture (unlike a content-script message), so permissions.request
+// works here. On grant we reload the tab so the content script re-runs authorized.
+if (chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener((tab) => {
+    void handleActionClick(tab);
+  });
+}
+
+async function handleActionClick(tab) {
+  const origin = tabOrigin(tab);
+  if (!origin) return;
+  const origins = [originPattern(origin)];
+  // permissions.request must be the first permission API called from the
+  // browser-action gesture. Awaiting permissions.contains first can consume the
+  // transient user gesture, so Chrome rejects the request and no prompt appears.
+  const granted = await chrome.permissions.request({ origins });
+  if (granted && typeof tab?.id === "number") {
+    try {
+      await chrome.tabs.reload(tab.id);
+    } catch (_e) {}
+  }
+}
+
+function tabOrigin(tab) {
+  const url = tab?.url;
+  if (typeof url !== "string") return null;
+  try {
+    const origin = new URL(url).origin;
+    return isHttpOrigin(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!isObject(message)) return false;
 
