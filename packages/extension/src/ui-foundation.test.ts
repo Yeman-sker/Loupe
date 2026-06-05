@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createDom, prefersReducedMotion } from "./ui/dom.js";
 import { createI18n } from "./ui/i18n.js";
-import { taskToken, locatorToken, syncToken, kindToken } from "./ui/status-tokens.js";
+import { taskToken, locatorToken, syncToken, kindToken, formatConfidencePercent } from "./ui/status-tokens.js";
 import { mount } from "./ui/app.js";
 import { SURFACE_ROOT_ID } from "./ui/host.js";
 
@@ -231,6 +231,8 @@ describe("UI-0 · status tokens (wire enum → glyph + label, never colour-only)
   it("shows confidence % for located/drifted but never a false % for lost", () => {
     assert.equal(locatorToken(t, "resolved", 1).label, "located 100%");
     assert.equal(locatorToken(t, "drifted", 0.62).label, "drifted 62%");
+    assert.equal(locatorToken(t, "resolved", 0.9333333333333332).label, "located 93%");
+    assert.equal(formatConfidencePercent(93.33333333333332), "93%");
     assert.equal(locatorToken(t, "lost").label, "lost");
     assert.equal(locatorToken(t, "lost").glyph, "✕");
   });

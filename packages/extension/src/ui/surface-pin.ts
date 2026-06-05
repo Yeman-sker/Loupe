@@ -5,6 +5,7 @@
 
 import { type Dom } from "./dom.js";
 import { type IntentKind } from "./lib-storage.js";
+import { formatConfidencePercent } from "./status-tokens.js";
 
 export type PinRecord = {
   id: string;
@@ -73,10 +74,10 @@ function locTok(dom: Dom, pin: PinRecord): HTMLElement {
   const conf = pin.confidence;
   if (pin.loc === "lost") return makeTok(dom, "✕", "lost", "bad");
   if (pin.loc === "drifted") {
-    const label = conf !== undefined ? `drifted ${conf}%` : "drifted";
+    const label = conf !== undefined ? `drifted ${formatConfidencePercent(conf)}` : "drifted";
     return makeTok(dom, "△", label, "warn");
   }
-  const label = conf !== undefined ? `located ${conf}%` : "located";
+  const label = conf !== undefined ? `located ${formatConfidencePercent(conf)}` : "located";
   return makeTok(dom, "✓", label, "good");
 }
 

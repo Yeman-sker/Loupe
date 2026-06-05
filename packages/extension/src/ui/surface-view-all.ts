@@ -5,6 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
+import { formatConfidencePercent } from "./status-tokens.js";
 
 export type ViewAllOpts = {
   t: Translate;
@@ -129,8 +130,8 @@ function buildItem(dom: Dom, p: PinRecord, opts: ViewAllOpts, t: Translate): HTM
   const locTok = p.loc === "lost"
     ? makeTok(dom, "✕", t("loc.lost"), "bad")
     : p.loc === "drifted"
-      ? makeTok(dom, "△", p.confidence !== undefined ? `drifted ${p.confidence}%` : t("loc.drifted"), "warn")
-      : makeTok(dom, "✓", p.confidence !== undefined ? `located ${p.confidence}%` : t("loc.located"), "good");
+      ? makeTok(dom, "△", p.confidence !== undefined ? `${t("loc.drifted")} ${formatConfidencePercent(p.confidence)}` : t("loc.drifted"), "warn")
+      : makeTok(dom, "✓", p.confidence !== undefined ? `${t("loc.located")} ${formatConfidencePercent(p.confidence)}` : t("loc.located"), "good");
   const syncTok = p.sync === "failed"
     ? makeTok(dom, "✕", t("sync.failed"), "bad")
     : p.sync === "local"

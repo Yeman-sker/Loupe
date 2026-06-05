@@ -26,9 +26,14 @@ export function taskToken(t: Translate, status: TaskStatus): TokenSpec {
 
 // confidence is the 0..1 locator confidence; rendered as a percent for
 // located/drifted. lost never shows a (false) percent.
+export function formatConfidencePercent(confidence: number): string {
+  const percent = confidence <= 1 ? confidence * 100 : confidence;
+  return `${Math.round(percent)}%`;
+}
+
 export function locatorToken(t: Translate, status: LocatorStatus, confidence?: number): TokenSpec {
   if (status === "lost") return { cls: "bad", glyph: "✕", label: t("loc.lost") };
-  const pct = confidence === undefined ? "" : ` ${Math.round(confidence * 100)}%`;
+  const pct = confidence === undefined ? "" : ` ${formatConfidencePercent(confidence)}`;
   if (status === "drifted") return { cls: "warn", glyph: "△", label: t("loc.drifted") + pct };
   return { cls: "good", glyph: "✓", label: t("loc.located") + pct };
 }

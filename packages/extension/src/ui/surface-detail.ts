@@ -5,6 +5,7 @@
 import { type Dom } from "./dom.js";
 import { type Translate } from "./i18n.js";
 import { type PinRecord } from "./surface-pin.js";
+import { formatConfidencePercent } from "./status-tokens.js";
 
 export type DetailOpts = {
   t: Translate;
@@ -45,8 +46,8 @@ export function renderDetail(dom: Dom, pin: PinRecord, opts: DetailOpts): HTMLEl
   const locTok = pin.loc === "lost"
     ? makeTok(dom, "✕", t("loc.lost"), "bad")
     : pin.loc === "drifted"
-      ? makeTok(dom, "△", pin.confidence !== undefined ? `drifted ${pin.confidence}%` : t("loc.drifted"), "warn")
-      : makeTok(dom, "✓", pin.confidence !== undefined ? `located ${pin.confidence}%` : t("loc.located"), "good");
+      ? makeTok(dom, "△", pin.confidence !== undefined ? `${t("loc.drifted")} ${formatConfidencePercent(pin.confidence)}` : t("loc.drifted"), "warn")
+      : makeTok(dom, "✓", pin.confidence !== undefined ? `${t("loc.located")} ${formatConfidencePercent(pin.confidence)}` : t("loc.located"), "good");
   const syncTok = pin.sync === "failed"
     ? makeTok(dom, "✕", t("sync.failed"), "bad")
     : pin.sync === "local"
