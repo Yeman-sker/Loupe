@@ -289,14 +289,22 @@ describe("background daemon pairing", () => {
       async (url, init) => {
         requests.push({ url: String(url), init });
         if (String(url) === "http://127.0.0.1:7373/v1/extension-pairing") {
-          return Response.json({ base_url: "http://127.0.0.1:7373", token: "auto-token", project_id: "project-auto", workspace_root_hash: "workspace-root-hash" });
+          return Response.json({ base_url: "http://127.0.0.1:7373", token: "auto-token", project_id: "project-auto", workspace_root_hash: "workspace-root-hash", workspace_root: "/Users/yem/dev/demo-app", project_name: "demo-app" });
         }
         if (init?.method === "POST") return new Response("{}", { status: 200 });
         return Response.json({ marks: [] });
       },
     );
 
-    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.equal(result.ok, true);
+    assert.equal(result.reconciled, true);
+    assert.equal(result.retried, 1);
+    assert.equal(result.stored, 1);
+    assert.equal(result.project_id, "project-auto");
+    assert.equal(result.workspace_root_hash, "workspace-root-hash");
+    assert.equal(result.workspace_root, "/Users/yem/dev/demo-app");
+    assert.equal(result.project_name, "demo-app");
+    assert.equal(result.session_id, "session-auto");
     assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/extension-pairing");
     assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer auto-token");
     assert.deepEqual(store["loupe:v1:daemon"], {
@@ -305,6 +313,41 @@ describe("background daemon pairing", () => {
       paired_at: "2026-01-01T00:00:01.000Z",
       project_id: "project-auto",
       workspace_root_hash: "workspace-root-hash",
+      workspace_root: "/Users/yem/dev/demo-app",
+      project_name: "demo-app",
+    });
+  });
+
+  it("reports stored daemon identity on wake before syncing", async () => {
+    const store: Record<string, unknown> = {
+      "loupe:v1:daemon": { base_url: "http://127.0.0.1:7373", token: "stored-token", paired_at: "2026-01-01T00:00:00.000Z", project_id: "project-stored", workspace_root_hash: "workspace-stored", workspace_root: "/Users/yem/dev/stored-app", project_name: "stored-app", branch: "main" },
+    };
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake" },
+      "2026-01-01T00:00:01.000Z",
+      async () => {
+        throw new Error("identity-only wake must not fetch marks");
+      },
+    );
+
+    assert.deepEqual(result, {
+      ok: true,
+      reconciled: false,
+      retried: 0,
+      stored: 0,
+      project_id: "project-stored",
+      workspace_root_hash: "workspace-stored",
+      workspace_root: "/Users/yem/dev/stored-app",
+      project_name: "stored-app",
+      branch: "main",
     });
   });
 });
@@ -351,7 +394,7 @@ describe("background service worker wake", () => {
       },
     );
 
-    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1, session_id: "session-1" });
     assert.equal(requests.length, 2);
     assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/marks");
     assert.equal(requests[0]?.init?.method, "POST");
@@ -398,7 +441,7 @@ describe("background service worker wake", () => {
       },
     );
 
-    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1, session_id: "session-1" });
     assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer stored-token");
     assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer stored-token");
     assert.equal(JSON.stringify(store).includes("stored-token"), true);
@@ -458,7 +501,7 @@ describe("background service worker wake", () => {
       async () => Response.json({ marks: [] }),
     );
 
-    assert.deepEqual(result, { ok: true, reconciled: true, retried: 0, stored: 0 });
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 0, stored: 0, session_id: "session-1" });
     assert.deepEqual(store[key], []);
     assert.deepEqual(store[tombstones_key], ["mark-deleted"]);
   });

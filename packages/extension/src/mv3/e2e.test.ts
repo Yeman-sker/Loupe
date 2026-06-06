@@ -242,7 +242,7 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
     assert.equal(handled, true);
     await flush_promises(16);
 
-    assert.equal(JSON.stringify(chrome.responses.at(-1)), JSON.stringify({ ok: true, reconciled: true, retried: 2, stored: 3 }));
+    assert.equal(JSON.stringify(chrome.responses.at(-1)), JSON.stringify({ ok: true, reconciled: true, retried: 2, stored: 3, session_id: SESSION_ID }));
     assert.equal(fetch.calls.length, 3);
     assert.equal(fetch.calls[0]?.input, "http://127.0.0.1:7373/v1/marks");
     assert.equal(header_value(fetch.calls[0]?.init?.headers, "authorization"), `${LOUPE_AUTH_SCHEME} token-123`);

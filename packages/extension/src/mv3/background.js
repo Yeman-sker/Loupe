@@ -209,6 +209,8 @@ async function pairDaemon(message) {
     ...(typeof input.token_path === "string" ? { token_path: input.token_path } : {}),
     ...(typeof health.project_id === "string" ? { project_id: health.project_id } : {}),
     ...(typeof health.workspace_root_hash === "string" ? { workspace_root_hash: health.workspace_root_hash } : {}),
+    ...(typeof health.workspace_root === "string" ? { workspace_root: health.workspace_root } : {}),
+    ...(typeof health.project_name === "string" ? { project_name: health.project_name } : {}),
     ...(typeof health.branch === "string" ? { branch: health.branch } : {}),
   };
   await chrome.storage.local.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
@@ -218,6 +220,8 @@ async function pairDaemon(message) {
     base_url: baseUrl,
     ...(typeof pairing.project_id === "string" ? { project_id: pairing.project_id } : {}),
     ...(typeof pairing.workspace_root_hash === "string" ? { workspace_root_hash: pairing.workspace_root_hash } : {}),
+    ...(typeof pairing.workspace_root === "string" ? { workspace_root: pairing.workspace_root } : {}),
+    ...(typeof pairing.project_name === "string" ? { project_name: pairing.project_name } : {}),
     ...(typeof pairing.branch === "string" ? { branch: pairing.branch } : {}),
   };
 }
@@ -227,8 +231,8 @@ async function handleServiceWorkerWake(message) {
   await chrome.storage.session.set(serviceWorkerWakeState(now));
 
   const scope = wakeScope(message);
-  if (!scope) return { ok: true, reconciled: false, retried: 0, stored: 0 };
   const daemon = wakeDaemon(message) || await storedDaemon() || await pairLocalDaemon(now);
+  if (!scope) return { ok: true, reconciled: false, retried: 0, stored: 0, ...daemonIdentity(daemon) };
   if (!daemon) {
     const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
     const stored = await chrome.storage.local.get(marksKey);
@@ -252,9 +256,9 @@ async function handleServiceWorkerWake(message) {
     const payload = await response.json();
     const daemonMarks = Array.isArray(payload?.marks) ? payload.marks : [];
     const merged = await reconcileDaemonMarks(marksKey, scope, daemonMarks, retriedIds);
-    return { ok: true, reconciled: true, retried: retryResults.length, stored: merged.length };
+    return { ok: true, reconciled: true, retried: retryResults.length, stored: merged.length, ...daemonIdentity(daemon), session_id: scope.session_id };
   } catch (error) {
-    return { ok: true, reconciled: false, retried: retryResults.length, stored: readAnnotationArray((await chrome.storage.local.get(marksKey))?.[marksKey]).length, error: errorMessage(error) };
+    return { ok: true, reconciled: false, retried: retryResults.length, stored: readAnnotationArray((await chrome.storage.local.get(marksKey))?.[marksKey]).length, error: errorMessage(error), ...daemonIdentity(daemon), session_id: scope.session_id };
   }
 }
 
@@ -294,7 +298,15 @@ async function storedDaemon() {
   const daemon = stored?.[LOUPE_DAEMON_STORAGE_KEY];
   if (!isObject(daemon)) return null;
   if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return null;
-  return { base_url: daemon.base_url, token: daemon.token };
+  return {
+    base_url: daemon.base_url,
+    token: daemon.token,
+    ...(typeof daemon.project_id === "string" ? { project_id: daemon.project_id } : {}),
+    ...(typeof daemon.workspace_root_hash === "string" ? { workspace_root_hash: daemon.workspace_root_hash } : {}),
+    ...(typeof daemon.workspace_root === "string" ? { workspace_root: daemon.workspace_root } : {}),
+    ...(typeof daemon.project_name === "string" ? { project_name: daemon.project_name } : {}),
+    ...(typeof daemon.branch === "string" ? { branch: daemon.branch } : {}),
+  };
 }
 
 async function pairLocalDaemon(now) {
@@ -316,10 +328,23 @@ async function pairLocalDaemon(now) {
     ...(typeof payload.token_path === "string" ? { token_path: payload.token_path } : {}),
     ...(typeof payload.project_id === "string" ? { project_id: payload.project_id } : {}),
     ...(typeof payload.workspace_root_hash === "string" ? { workspace_root_hash: payload.workspace_root_hash } : {}),
+    ...(typeof payload.workspace_root === "string" ? { workspace_root: payload.workspace_root } : {}),
+    ...(typeof payload.project_name === "string" ? { project_name: payload.project_name } : {}),
     ...(typeof payload.branch === "string" ? { branch: payload.branch } : {}),
   };
   await chrome.storage.local.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
-  return { base_url: pairing.base_url, token: pairing.token };
+  return { base_url: pairing.base_url, token: pairing.token, ...(typeof pairing.project_id === "string" ? { project_id: pairing.project_id } : {}), ...(typeof pairing.workspace_root_hash === "string" ? { workspace_root_hash: pairing.workspace_root_hash } : {}), ...(typeof pairing.workspace_root === "string" ? { workspace_root: pairing.workspace_root } : {}), ...(typeof pairing.project_name === "string" ? { project_name: pairing.project_name } : {}), ...(typeof pairing.branch === "string" ? { branch: pairing.branch } : {}) };
+}
+
+function daemonIdentity(daemon) {
+  if (!daemon || typeof daemon.project_id !== "string" || typeof daemon.workspace_root_hash !== "string") return {};
+  return {
+    project_id: daemon.project_id,
+    workspace_root_hash: daemon.workspace_root_hash,
+    ...(typeof daemon.workspace_root === "string" ? { workspace_root: daemon.workspace_root } : {}),
+    ...(typeof daemon.project_name === "string" ? { project_name: daemon.project_name } : {}),
+    ...(typeof daemon.branch === "string" ? { branch: daemon.branch } : {}),
+  };
 }
 
 async function retryLocalMark(marksKey, mark, daemon, now) {

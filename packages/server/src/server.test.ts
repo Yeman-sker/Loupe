@@ -83,6 +83,8 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.token_path, undefined);
     assert.equal(body.project_id, health.project_id);
     assert.equal(body.workspace_root_hash, health.workspace_root_hash);
+    assert.equal(body.workspace_root, process.cwd());
+    assert.equal(body.project_name, process.cwd().split("/").at(-1));
   });
 
   it("allows extension pairing only from chrome extension origins", async () => {

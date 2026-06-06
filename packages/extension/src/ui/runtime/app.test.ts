@@ -344,4 +344,79 @@ describe("UI-1 · surface host mount → update → unmount", () => {
     app.toggleStatusBar();
     assert.equal(descendants(wrapper).some((e) => hasClass(e, "lp-status")), false, "status bar hidden after second toggle");
   });
+
+  it("uses daemon workspace identity from service-worker wake for project scope", async () => {
+    const { doc, asDocument } = makeFakeDocument();
+    const backing = makeFakeStorage();
+    const getKeys: unknown[] = [];
+    const storage = {
+      get: (key: string): Promise<Record<string, unknown>> => {
+        getKeys.push(key);
+        return backing.storage.get(key);
+      },
+      set: backing.storage.set,
+    };
+    (doc as unknown as { location: Location; title: string }).location = { href: "http://localhost:8081/#about", origin: "http://localhost:8081" } as unknown as Location;
+    (doc as unknown as { title: string }).title = "Demo";
+
+    const runtimeCalls: unknown[] = [];
+    const previousChrome = (globalThis as typeof globalThis & { chrome?: unknown }).chrome;
+    const previousRandomUUID = globalThis.crypto.randomUUID;
+    (globalThis as typeof globalThis & { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage(message: unknown, callback: (response: unknown) => void): void {
+          runtimeCalls.push(message);
+          callback({ ok: true, reconciled: false, retried: 0, stored: 0, project_id: "project-daemon", workspace_root_hash: "workspace-daemon", workspace_root: "/Users/yem/dev/demo-app", project_name: "demo-app", branch: "main" });
+        },
+      },
+    };
+    Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: () => "mark-daemon-scope" });
+
+    try {
+      await mount({ baseUrl: "chrome-extension://x/", document: asDocument, storage });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const scopeMessage = runtimeCalls.find((message) => typeof message === "object" && message !== null && (message as Record<string, unknown>).type === "loupe.service_worker.wake" && (message as Record<string, unknown>).scope === undefined);
+      assert.ok(scopeMessage !== undefined, "runtime requested daemon identity before building a save scope");
+
+      const scopedProject = "loupe:v1:project:project-daemon:session:session_";
+      assert.ok(
+        getKeys.some((key) => typeof key === "string" && key.startsWith(scopedProject)),
+        "daemon identity seeds project-scoped storage lookup",
+      );
+      assert.equal(runtimeCalls.length > 0, true);
+
+      const shadow = present(present(doc.getElementById(SURFACE_ROOT_ID) ?? undefined).shadow ?? undefined);
+      const wrapper = present(elementChildren(shadow).find((e) => hasClass(e, "loupe")));
+      assert.ok(
+        descendants(wrapper).some((e) => hasClass(e, "pname") && e.textContent === "demo-app") &&
+          descendants(wrapper).some((e) => hasClass(e, "ppath") && e.textContent === "/Users/yem/dev/demo-app"),
+        "authorized linked site shows project chooser during onboarding",
+      );
+      const confirm = present(descendants(wrapper).find((e) => e.tagName === "button" && hasClass(e, "primary")));
+      confirm.dispatch("click");
+      assert.equal(
+        descendants(wrapper).some((e) => hasClass(e, "lp-mode-proj")),
+        false,
+        "confirming project chooser does not start element picking",
+      );
+      const pick = present(descendants(wrapper).find((e) => e.tagName === "button" && hasClass(e, "lp-ready-pick")));
+      pick.dispatch("click");
+      assert.ok(
+        descendants(wrapper).some((e) => hasClass(e, "lp-mode-proj") && e.textContent === "Project: demo-app"),
+        "explicit picking shows readable project context",
+      );
+
+      assert.ok(
+        getKeys.some((key) => typeof key === "string" && key === "loupe:v1:projects:index"),
+        "first linked site checks project metadata after authorization",
+      );
+
+      const storedAfterChoice = await backing.storage.get("loupe:v1:project-onboarding:http%3A%2F%2Flocalhost%3A8081:project-daemon");
+      assert.equal(storedAfterChoice["loupe:v1:project-onboarding:http%3A%2F%2Flocalhost%3A8081:project-daemon"], true);
+      assert.equal(descendants(wrapper).some((e) => e.textContent?.includes("project-daemon")), false);
+    } finally {
+      (globalThis as typeof globalThis & { chrome?: unknown }).chrome = previousChrome;
+      Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: previousRandomUUID });
+    }
+  });
 });

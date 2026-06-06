@@ -204,6 +204,8 @@ export type HealthPayload = {
   home_hash?: string;
   workspace_root_hash?: string;
   project_id?: string;
+  workspace_root?: string;
+  project_name?: string;
   branch?: string;
 };
 

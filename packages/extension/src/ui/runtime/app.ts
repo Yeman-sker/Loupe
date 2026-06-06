@@ -15,6 +15,7 @@ import {
   resolve_annotation,
   delete_annotation,
   copy_markdown,
+  type ProjectScopeUrlInput,
   type Annotation,
   type AnnotationDraft,
   type IntentKind,
@@ -33,6 +34,7 @@ import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEnt
 import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
 import { readPrefs } from "./prefs.js";
 
+const PROJECT_ONBOARDING_PREFIX = "loupe:v1:project-onboarding";
 const MESSAGE_SERVICE_WORKER_WAKE = "loupe.service_worker.wake";
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -100,6 +102,15 @@ type AppState = {
   showStatusBar: boolean;
   projects: ProjectEntry[];
   selectedProject: string | null;
+  daemonProject: DaemonProjectIdentity | null;
+};
+
+type DaemonProjectIdentity = {
+  project_id: string;
+  workspace_root_hash: string;
+  workspace_root?: string;
+  project_name?: string;
+  branch?: string;
 };
 
 // CSS for UI-1 surfaces — injected into shadow root alongside host.ts BASE_CSS.
@@ -436,6 +447,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     showStatusBar: false,
     projects: [],
     selectedProject: null,
+    daemonProject: null,
   };
 
   // In-memory annotation store for resolve/delete/copy operations
@@ -695,14 +707,6 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   function startPicking(): void {
     if (!state.authorized) return;
-    // Show project chooser when multiple projects exist and none selected yet
-    if (state.projects.length > 1 && state.selectedProject === null) {
-      state.showProjectChooser = true;
-      state.openDetail = null;
-      state.showViewAll = false;
-      render();
-      return;
-    }
     state.picking = true;
     state.intent = null;
     state.openDetail = null;
@@ -713,21 +717,38 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   }
 
   function doPickProject(id: string | "local"): void {
+    if (id === "local") state.daemonProject = null;
     state.selectedProject = id === "local" ? null : id;
     state.showProjectChooser = false;
-    state.picking = true;
     state.intent = null;
     state.openDetail = null;
     state.showViewAll = false;
+    void markProjectOnboardingSeen();
     render();
   }
 
-  // Name of the currently selected project, or undefined when local/not-linked.
+  // Name of the current linked project; undefined only for explicit local/temporary scope.
   function currentProjectName(): string | undefined {
-    if (state.selectedProject === null) return undefined;
-    return state.projects.find((p) => p.id === state.selectedProject)?.name;
+    if (state.selectedProject !== null) return state.projects.find((p) => p.id === state.selectedProject)?.name;
+    if (state.daemonProject !== null) return state.daemonProject.project_name ?? projectRootName(state.daemonProject.workspace_root) ?? state.daemonProject.project_id;
+    return undefined;
   }
 
+  function projectRootName(path: string | undefined): string | undefined {
+    if (path === undefined || path.length === 0) return undefined;
+    return path.split(/[\\/]+/).filter((part) => part.length > 0).at(-1);
+  }
+
+
+  function daemonProjectEntry(identity: DaemonProjectIdentity): ProjectEntry {
+    return {
+      id: identity.project_id,
+      name: identity.project_name ?? projectRootName(identity.workspace_root) ?? identity.project_id,
+      path: identity.workspace_root ?? identity.workspace_root_hash,
+      workspace_root_hash: identity.workspace_root_hash,
+      ...(identity.branch === undefined ? {} : { branch: identity.branch }),
+    };
+  }
   function doResolve(pinId: string): void {
     const pin = state.pins.find((p) => p.id === pinId);
     const annotation = annotations.get(pinId);
@@ -887,17 +908,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   async function doSave(element: Element, comment: string, kind: IntentKind): Promise<void> {
     const doc = opts.document;
-    const selectedEntry = state.selectedProject !== null
-      ? state.projects.find((p) => p.id === state.selectedProject)
-      : undefined;
-    const scopeInput: Parameters<typeof project_scope_from_url>[0] = {
-      url: doc.location.href,
-      title: doc.title,
-    };
-    if (selectedEntry?.id !== undefined) scopeInput.project_id = selectedEntry.id;
-    if (selectedEntry?.workspace_root_hash !== undefined) scopeInput.workspace_root_hash = selectedEntry.workspace_root_hash;
-    if (selectedEntry?.branch !== undefined) scopeInput.branch = selectedEntry.branch;
-    const project = project_scope_from_url(scopeInput);
+    const project = project_scope_from_url(scopeInputForCurrentPage());
     const locator = capture_locator(element);
     const resolution = resolve(locator, doc);
     const context = buildContext(element, doc);
@@ -1044,6 +1055,26 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     void vw; void vh;
   }
 
+
+  function projectOnboardingKey(): string | undefined {
+    if (state.daemonProject === null) return undefined;
+    return `${PROJECT_ONBOARDING_PREFIX}:${encodeURIComponent(opts.document.location.origin)}:${state.daemonProject.project_id}`;
+  }
+
+  async function hasSeenProjectOnboarding(): Promise<boolean> {
+    if (opts.storage === undefined) return true;
+    const key = projectOnboardingKey();
+    if (key === undefined) return true;
+    const stored = await opts.storage.get(key).catch(() => ({} as Record<string, unknown>));
+    return stored[key] === true;
+  }
+
+  async function markProjectOnboardingSeen(): Promise<void> {
+    if (opts.storage === undefined) return;
+    const key = projectOnboardingKey();
+    if (key === undefined) return;
+    await opts.storage.set({ [key]: true });
+  }
   function lastPinElement(): Element | null {
     return state.pins[state.pins.length - 1]?.element ?? null;
   }
@@ -1051,13 +1082,43 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   // Hand the dev-build instrumentation read-only access to the runtime so it can
   // observe state (current target, project scope) without owning any of it.
   function instrumentationScopeInput(): InstrumentationScopeInput {
+    const input = scopeInputForCurrentPage();
+    return { ...input, title: input.title ?? "" };
+  }
+
+  function scopeInputForCurrentPage(): ProjectScopeUrlInput {
     const doc = opts.document;
     const selectedEntry = state.selectedProject !== null ? state.projects.find((p) => p.id === state.selectedProject) : undefined;
-    const scopeInput: InstrumentationScopeInput = { url: doc.location.href, title: doc.title };
+    const scopeInput: ProjectScopeUrlInput = { url: doc.location.href, title: doc.title };
     if (selectedEntry?.id !== undefined) scopeInput.project_id = selectedEntry.id;
     if (selectedEntry?.workspace_root_hash !== undefined) scopeInput.workspace_root_hash = selectedEntry.workspace_root_hash;
     if (selectedEntry?.branch !== undefined) scopeInput.branch = selectedEntry.branch;
+    if (selectedEntry === undefined && state.daemonProject !== null) {
+      scopeInput.project_id = state.daemonProject.project_id;
+      scopeInput.workspace_root_hash = state.daemonProject.workspace_root_hash;
+      if (state.daemonProject.branch !== undefined) scopeInput.branch = state.daemonProject.branch;
+    }
     return scopeInput;
+  }
+
+  async function refreshDaemonProjectIdentity(): Promise<void> {
+    const runtime = extensionRuntime();
+    if (runtime === undefined) return;
+    const response = await runtimeMessage(runtime, { type: MESSAGE_SERVICE_WORKER_WAKE });
+    if (isDaemonProjectIdentity(response)) {
+      state.daemonProject = {
+        project_id: response.project_id,
+        workspace_root_hash: response.workspace_root_hash,
+        ...(typeof response.workspace_root === "string" ? { workspace_root: response.workspace_root } : {}),
+        ...(typeof response.project_name === "string" ? { project_name: response.project_name } : {}),
+        ...(typeof response.branch === "string" ? { branch: response.branch } : {}),
+      };
+      if (!state.projects.some((project) => project.id === state.daemonProject?.project_id)) state.projects = [daemonProjectEntry(state.daemonProject), ...state.projects];
+    }
+  }
+
+  function isDaemonProjectIdentity(value: unknown): value is DaemonProjectIdentity {
+    return isRecord(value) && typeof value.project_id === "string" && typeof value.workspace_root_hash === "string";
   }
 
   instrumentation?.attach?.({
@@ -1113,7 +1174,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     }
 
     // Load existing annotations for the current session
-    const scope = project_scope_from_url({ url: doc.location.href, title: doc.title });
+    await refreshDaemonProjectIdentity();
+    const scope = project_scope_from_url(scopeInputForCurrentPage());
     const marksKey = session_marks_key(scope.project_id, scope.session_id);
     const marksStored = await opts.storage.get(marksKey).catch(() => ({} as Record<string, unknown>));
     const marksRaw = (marksStored as Record<string, unknown>)[marksKey];
@@ -1126,6 +1188,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           state.pins.push(annotationToPinRecord(ann, state.markCount, doc));
         }
       }
+      render();
+    }
+    if (state.daemonProject !== null && state.selectedProject === null && !(await hasSeenProjectOnboarding())) {
+      state.showProjectChooser = true;
       render();
     }
 

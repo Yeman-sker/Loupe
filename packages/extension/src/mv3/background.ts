@@ -72,14 +72,16 @@ type ProjectScope = {
 type DaemonCredentials = {
   readonly base_url: string;
   readonly token: string;
+  readonly project_id?: string;
+  readonly workspace_root_hash?: string;
+  readonly workspace_root?: string;
+  readonly project_name?: string;
+  readonly branch?: string;
 };
 
 type DaemonPairing = DaemonCredentials & {
   readonly paired_at: string;
   readonly token_path?: string;
-  readonly project_id?: string;
-  readonly workspace_root_hash?: string;
-  readonly branch?: string;
 };
 
 type SyncState = {
@@ -270,6 +272,8 @@ export async function pair_daemon(
     base_url,
     ...(pairing.project_id === undefined ? {} : { project_id: pairing.project_id }),
     ...(pairing.workspace_root_hash === undefined ? {} : { workspace_root_hash: pairing.workspace_root_hash }),
+    ...(pairing.workspace_root === undefined ? {} : { workspace_root: pairing.workspace_root }),
+    ...(pairing.project_name === undefined ? {} : { project_name: pairing.project_name }),
     ...(pairing.branch === undefined ? {} : { branch: pairing.branch }),
   };
 }
@@ -283,8 +287,8 @@ export async function handle_service_worker_wake(
   await persist_service_worker_wake(storage, now);
 
   const scope = wake_scope(message);
-  if (scope === undefined) return { ok: true, reconciled: false, retried: 0, stored: 0 };
   const daemon = wake_daemon(message) ?? await stored_daemon(storage.local) ?? await pair_local_daemon(storage.local, now, fetch_like);
+  if (scope === undefined) return { ok: true, reconciled: false, retried: 0, stored: 0, ...daemon_identity(daemon) };
   if (daemon === undefined) {
     const marks_key = session_marks_key(scope.project_id, scope.session_id);
     const stored = await storage.local.get(marks_key);
@@ -307,10 +311,10 @@ export async function handle_service_worker_wake(
     const payload: unknown = await response.json();
     const daemon_marks = is_record(payload) && Array.isArray(payload.marks) ? payload.marks : [];
     const merged = await reconcile_daemon_marks(storage.local, marks_key, scope, daemon_marks, retried_ids);
-    return { ok: true, reconciled: true, retried: retryable.length, stored: merged.length };
+    return { ok: true, reconciled: true, retried: retryable.length, stored: merged.length, ...daemon_identity(daemon), session_id: scope.session_id };
   } catch (error) {
     const current = await storage.local.get(marks_key);
-    return { ok: true, reconciled: false, retried: retryable.length, stored: read_annotation_array(current[marks_key]).length, error: error_message(error) };
+    return { ok: true, reconciled: false, retried: retryable.length, stored: read_annotation_array(current[marks_key]).length, error: error_message(error), ...daemon_identity(daemon), session_id: scope.session_id };
   }
 }
 
@@ -420,17 +424,38 @@ async function pair_local_daemon(storage: ChromeLike["storage"]["local"], now: s
     ...(typeof payload.token_path === "string" ? { token_path: payload.token_path } : {}),
     ...(typeof payload.project_id === "string" ? { project_id: payload.project_id } : {}),
     ...(typeof payload.workspace_root_hash === "string" ? { workspace_root_hash: payload.workspace_root_hash } : {}),
+    ...(typeof payload.workspace_root === "string" ? { workspace_root: payload.workspace_root } : {}),
+    ...(typeof payload.project_name === "string" ? { project_name: payload.project_name } : {}),
     ...(typeof payload.branch === "string" ? { branch: payload.branch } : {}),
   };
   await storage.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
-  return { base_url: pairing.base_url, token: pairing.token };
+  return { base_url: pairing.base_url, token: pairing.token, ...(pairing.project_id === undefined ? {} : { project_id: pairing.project_id }), ...(pairing.workspace_root_hash === undefined ? {} : { workspace_root_hash: pairing.workspace_root_hash }), ...(pairing.workspace_root === undefined ? {} : { workspace_root: pairing.workspace_root }), ...(pairing.project_name === undefined ? {} : { project_name: pairing.project_name }), ...(pairing.branch === undefined ? {} : { branch: pairing.branch }) };
+}
+
+function daemon_identity(daemon: DaemonCredentials | undefined): Record<string, string> {
+  if (daemon?.project_id === undefined || daemon.workspace_root_hash === undefined) return {};
+  return {
+    project_id: daemon.project_id,
+    workspace_root_hash: daemon.workspace_root_hash,
+    ...(daemon.workspace_root === undefined ? {} : { workspace_root: daemon.workspace_root }),
+    ...(daemon.project_name === undefined ? {} : { project_name: daemon.project_name }),
+    ...(daemon.branch === undefined ? {} : { branch: daemon.branch }),
+  };
 }
 
 function read_daemon_credentials(value: unknown): DaemonCredentials | undefined {
   if (!is_record(value)) return undefined;
   if (typeof value.base_url !== "string" || typeof value.token !== "string" || value.base_url.length === 0 || value.token.length === 0) return undefined;
   if (!is_loopback_daemon_url(value.base_url)) return undefined;
-  return { base_url: value.base_url, token: value.token };
+  return {
+    base_url: value.base_url,
+    token: value.token,
+    ...(typeof value.project_id === "string" ? { project_id: value.project_id } : {}),
+    ...(typeof value.workspace_root_hash === "string" ? { workspace_root_hash: value.workspace_root_hash } : {}),
+    ...(typeof value.workspace_root === "string" ? { workspace_root: value.workspace_root } : {}),
+    ...(typeof value.project_name === "string" ? { project_name: value.project_name } : {}),
+    ...(typeof value.branch === "string" ? { branch: value.branch } : {}),
+  };
 }
 
 function is_loopback_daemon_url(value: string): boolean {

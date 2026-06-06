@@ -105,7 +105,7 @@ export function renderProjectChooser(dom: Dom, projects: ProjectEntry[], opts: C
   // Focus the selected radio on open so arrow keys work immediately. Guarded
   // for the fake DOM in unit tests; runs after mount via the macrotask queue.
   const initialFocus = items[selectedIdx];
-  setTimeout(() => { initialFocus?.focus(); }, 0);
+  setTimeout(() => { if (typeof initialFocus?.focus === "function") initialFocus.focus(); }, 0);
 
   return dom.el("div", { class: "center-wrap" }, [card]);
 }

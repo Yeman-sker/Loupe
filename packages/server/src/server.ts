@@ -1,5 +1,5 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   assert_annotation,
   assert_anomaly_report_input,
@@ -82,6 +82,8 @@ type ExtensionPairingPayload = {
   token_path?: string;
   project_id: string;
   workspace_root_hash: string;
+  workspace_root: string;
+  project_name: string;
   branch?: string;
 };
 
@@ -179,6 +181,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       token: context.token,
       project_id: projectIdForWorkspaceRootHash(workspace_root_hash),
       workspace_root_hash,
+      workspace_root: context.workspaceRoot,
+      project_name: projectNameForWorkspaceRoot(context.workspaceRoot),
     };
     if (context.branch !== undefined) payload.branch = context.branch;
     writeJson(response, 200, payload);
@@ -221,6 +225,9 @@ function isProtectedPath(pathname: string): boolean {
 
 function isExtensionPairingOrigin(origin: string | undefined): boolean {
   return origin === undefined || origin.startsWith("chrome-extension://");
+}
+function projectNameForWorkspaceRoot(workspaceRoot: string): string {
+  return basename(workspaceRoot) || workspaceRoot;
 }
 
 function loopbackBaseUrl(request: IncomingMessage, fallbackPort: number): string {
