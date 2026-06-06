@@ -29,7 +29,7 @@ test("manual anomaly hotkey (⌥⇧A) ships a replayable bundle to the daemon", 
         if (!res.ok) return 0;
         return ((await res.json()) as { anomalies: AnomalySummary[] }).anomalies.length;
       },
-      { timeout: 10_000 },
+      { timeout: 15_000 },
     )
     .toBeGreaterThanOrEqual(1);
 

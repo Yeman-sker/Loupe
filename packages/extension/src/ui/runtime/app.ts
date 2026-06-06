@@ -32,10 +32,6 @@ import { renderStatusBar, type StatusModel } from "../surfaces/status-bar.js";
 import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEntry } from "./pin-model.js";
 import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
 import { readPrefs } from "./prefs.js";
-import { BreadcrumbBuffer } from "../anomaly/breadcrumbs.js";
-import { buildAnomalyReport, captureEnv } from "../anomaly/report.js";
-import { isAnomalyChord } from "../anomaly/hotkey.js";
-import { serializeAnomalySnapshot } from "../anomaly/snapshot.js";
 
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
@@ -51,6 +47,30 @@ export type MountOptions = {
   // off everything else until the user grants via the toolbar action + reload.
   // Defaults to true so existing callers/tests keep the authorized golden path.
   authorized?: boolean;
+  // Optional dev-build hook for observing the runtime (e.g. anomaly capture).
+  // Production callers pass nothing, so this is entirely inert in shipped builds
+  // and the dev-only consumer is excluded from the production tsconfig.
+  instrumentation?: Instrumentation;
+};
+
+export type InstrumentationScopeInput = {
+  url: string;
+  title: string;
+  project_id?: string;
+  workspace_root_hash?: string;
+  branch?: string;
+};
+
+export type InstrumentationApi = {
+  document: Document;
+  getCurrentTarget: () => Element | null;
+  getScopeInput: () => InstrumentationScopeInput;
+};
+
+export type Instrumentation = {
+  breadcrumb?: (kind: string, detail?: string) => void;
+  attach?: (api: InstrumentationApi) => void;
+  detach?: () => void;
 };
 
 export type SurfaceApp = {
@@ -416,9 +436,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   // In-memory annotation store for resolve/delete/copy operations
   const annotations = new Map<string, Annotation>();
-
-  // Recent-action trail attached to manually flagged anomalies (⌥⇧A).
-  const breadcrumbs = new BreadcrumbBuffer();
+  const instrumentation = opts.instrumentation;
 
   let currentPicker: Picker | null = null;
   let detachReady: (() => void) | null = null;
@@ -686,7 +704,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     state.openDetail = null;
     state.showViewAll = false;
     state.showProjectChooser = false;
-    breadcrumbs.push("pick_start");
+    instrumentation?.breadcrumb?.("pick_start");
     render();
   }
 
@@ -918,7 +936,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     annotations.set(annotation.id, annotation);
     state.pins.push(pinRecord);
     state.intent = null;
-    breadcrumbs.push("save", annotation.context.element.selector_preview);
+    instrumentation?.breadcrumb?.("save", annotation.context.element.selector_preview);
     render();
 
     // Show "Add another" near the new pin
@@ -981,53 +999,27 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     return state.pins[state.pins.length - 1]?.element ?? null;
   }
 
-  // ⌥⇧A: flag the current target as a product-level anomaly and ship a
-  // replayable bundle (locator + live resolve + DOM snapshot) to the daemon.
-  async function captureManualAnomaly(): Promise<void> {
+  // Hand the dev-build instrumentation read-only access to the runtime so it can
+  // observe state (current target, project scope) without owning any of it.
+  function instrumentationScopeInput(): InstrumentationScopeInput {
     const doc = opts.document;
-    const target = state.intent?.element ?? state.hover?.element ?? lastPinElement() ?? (doc.activeElement instanceof Element ? doc.activeElement : null);
-    if (target === null) return;
-    breadcrumbs.push("manual_flag");
-
-    const locator = capture_locator(target);
-    const resolution = resolve(locator, doc);
-    const context = buildContext(target, doc);
-
     const selectedEntry = state.selectedProject !== null ? state.projects.find((p) => p.id === state.selectedProject) : undefined;
-    const scopeInput: Parameters<typeof project_scope_from_url>[0] = { url: doc.location.href, title: doc.title };
+    const scopeInput: InstrumentationScopeInput = { url: doc.location.href, title: doc.title };
     if (selectedEntry?.id !== undefined) scopeInput.project_id = selectedEntry.id;
     if (selectedEntry?.workspace_root_hash !== undefined) scopeInput.workspace_root_hash = selectedEntry.workspace_root_hash;
     if (selectedEntry?.branch !== undefined) scopeInput.branch = selectedEntry.branch;
-    const project = project_scope_from_url(scopeInput);
-
-    const draft: Parameters<typeof buildAnomalyReport>[0] = {
-      source: "manual",
-      summary: `Manual anomaly @ ${context.element.selector_preview}`,
-      breadcrumbs: breadcrumbs.snapshot(),
-      locator,
-      resolve_result: resolution,
-      project,
-      env: captureEnv(doc.defaultView ?? {}),
-      dom_html: serializeAnomalySnapshot(target as unknown as Parameters<typeof serializeAnomalySnapshot>[0]),
-    };
-    if (opts.storage !== undefined) {
-      const key = session_marks_key(project.project_id, project.session_id);
-      const stored = await opts.storage.get(key);
-      draft.storage = { [key]: stored[key] ?? [] };
-    }
-
-    const runtime = extensionRuntime();
-    if (runtime !== undefined) void runtimeMessage(runtime, { type: "loupe.anomaly.capture", report: buildAnomalyReport(draft) });
+    return scopeInput;
   }
+
+  instrumentation?.attach?.({
+    document: opts.document,
+    getCurrentTarget: () => state.intent?.element ?? state.hover?.element ?? lastPinElement() ?? (opts.document.activeElement instanceof Element ? opts.document.activeElement : null),
+    getScopeInput: instrumentationScopeInput,
+  });
 
   // ⌥L global toggle: start / stop picking from anywhere on the page
   function onGlobalKey(e: KeyboardEvent): void {
     if (!state.authorized) return;
-    if (isAnomalyChord(e)) {
-      e.preventDefault();
-      void captureManualAnomaly();
-      return;
-    }
     if (e.altKey && (e.key === "l" || e.key === "L")) {
       e.preventDefault();
       if (state.picking) {
@@ -1046,6 +1038,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
   const app: SurfaceApp = {
     unmount: () => {
+      instrumentation?.detach?.();
       opts.document.removeEventListener("keydown", onGlobalKey);
       win?.removeEventListener("resize", render);
       clearSurfaces();

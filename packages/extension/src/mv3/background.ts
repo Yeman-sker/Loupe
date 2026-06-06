@@ -6,7 +6,6 @@ export const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
-  CAPTURE_ANOMALY: "loupe.anomaly.capture",
 });
 
 export type ChromeLike = {
@@ -250,39 +249,6 @@ export async function handle_service_worker_wake(
   }
 }
 
-// Pairing key: the daemon base_url + token live in extension storage so the
-// service worker can authenticate UI-triggered daemon writes without exposing
-// the token to the page. Populated by pairing (PRD §10.4) or seeded in tests.
-export const DAEMON_CREDENTIALS_KEY = "loupe:v1:daemon";
-
-async function daemon_credentials(storage: ChromeLike["storage"]["local"], message: unknown): Promise<DaemonCredentials | undefined> {
-  const from_message = wake_daemon(message);
-  if (from_message !== undefined) return from_message;
-  const stored = await storage.get(DAEMON_CREDENTIALS_KEY);
-  return wake_daemon({ daemon: stored[DAEMON_CREDENTIALS_KEY] });
-}
-
-export async function handle_capture_anomaly(storage: ChromeLike["storage"], message: unknown, fetch_like: FetchLike = fetch): Promise<Record<string, unknown>> {
-  const daemon = await daemon_credentials(storage.local, message);
-  const report = is_record(message) && is_record(message.report) ? message.report : undefined;
-  if (daemon === undefined) return { ok: false, error: "Missing daemon credentials" };
-  if (report === undefined) return { ok: false, error: "Missing anomaly report" };
-
-  try {
-    const response = await fetch_like(join_daemon_url(daemon.base_url, "/v1/anomalies"), {
-      method: "POST",
-      headers: { ...authorized_headers(daemon.token), "content-type": "application/json" },
-      body: JSON.stringify(report),
-    });
-    if (!response.ok) throw new Error(`POST /v1/anomalies failed with ${response.status}`);
-    const payload: unknown = await response.json();
-    const id = is_record(payload) && is_record(payload.anomaly) && typeof payload.anomaly.id === "string" ? payload.anomaly.id : undefined;
-    return id === undefined ? { ok: true } : { ok: true, id };
-  } catch (error) {
-    return { ok: false, error: error_message(error) };
-  }
-}
-
 export function install_background_listeners(chrome_like: ChromeLike, now: () => string = () => new Date().toISOString()): void {
   chrome_like.runtime.onInstalled.addListener(() => {
     void persist_service_worker_wake(chrome_like.storage, now());
@@ -312,14 +278,6 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
 
     if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
       void handle_service_worker_wake(chrome_like.storage, message, now()).then(
-        sendResponse,
-        (error) => sendResponse({ ok: false, error: error_message(error) }),
-      );
-      return true;
-    }
-
-    if (message.type === MESSAGE_TYPES.CAPTURE_ANOMALY) {
-      void handle_capture_anomaly(chrome_like.storage, message).then(
         sendResponse,
         (error) => sendResponse({ ok: false, error: error_message(error) }),
       );

@@ -14,7 +14,10 @@ const extDir = path.join(repoRoot, "packages/extension");
 const destDir = path.join(repoRoot, "packages/e2e/.test-ext");
 
 function buildExtension(): void {
-  const result = spawnSync("pnpm", ["--filter", "@loupe/extension", "build"], {
+  // Dev build: includes anomaly capture (src/ui/anomaly + src/ui/dev). The
+  // production build (`build`) excludes it, so the test extension must use
+  // `build:dev` to exercise the anomaly path.
+  const result = spawnSync("pnpm", ["--filter", "@loupe/extension", "build:dev"], {
     cwd: repoRoot,
     stdio: "inherit",
     shell: true,
@@ -30,12 +33,7 @@ function copyExtension(): void {
   fs.rmSync(destDir, { recursive: true, force: true });
   fs.mkdirSync(destDir, { recursive: true });
 
-  const entries = [
-    "manifest.json",
-    "src",
-    "dist",
-    "assets",
-  ] as const;
+  const entries = ["src", "dist", "assets"] as const;
 
   for (const entry of entries) {
     const src = path.join(extDir, entry);
@@ -44,6 +42,10 @@ function copyExtension(): void {
       fs.cpSync(src, dest, { recursive: true });
     }
   }
+
+  // The test extension uses the dev manifest (loads content.dev.js → anomaly
+  // capture), written out as the canonical manifest.json for the unpacked load.
+  fs.cpSync(path.join(extDir, "manifest.dev.json"), path.join(destDir, "manifest.json"));
 }
 
 function patchClosedToOpen(filePath: string): void {
@@ -96,7 +98,8 @@ export async function prepExtension(): Promise<string> {
   buildExtension();
   copyExtension();
 
-  const contentJs = path.join(destDir, "src/mv3/content.js");
+  // The dev manifest loads content.dev.js, so patch that one's shadow mode.
+  const contentJs = path.join(destDir, "src/mv3/content.dev.js");
   const hostJs = path.join(destDir, "dist/ui/core/host.js");
 
   patchClosedToOpen(contentJs);

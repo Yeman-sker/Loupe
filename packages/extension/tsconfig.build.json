@@ -8,5 +8,5 @@
     "sourceMap": true
   },
   "include": ["src/ui/**/*.ts"],
-  "exclude": ["src/ui/**/*.test.ts", "src/ui/schema.ts"]
+  "exclude": ["src/ui/**/*.test.ts", "src/ui/schema.ts", "src/ui/anomaly/**", "src/ui/dev/**"]
 }

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Loupe (dev)",
+  "version": "0.0.0",
+  "description": "Loupe dev build — includes anomaly capture (⌥⇧A). Not for end users.",
+  "permissions": ["activeTab", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": [],
+  "action": {
+    "default_title": "Loupe (dev)"
+  },
+  "background": {
+    "service_worker": "src/mv3/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/mv3/content.dev.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/ui/*.js", "dist/ui/*.js.map", "dist/ui/*/*.js", "dist/ui/*/*.js.map", "assets/fonts/*.woff2"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}

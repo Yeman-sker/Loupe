@@ -1,9 +1,14 @@
 # 阶段 QA-0 · 异常采集与离线可重放管线（MVP 骨架）
 
-> **关联 ADP：** `adp-20260606-anomaly-capture-offline-replay-pipeline.md`
+> **关联 ADP：** `adp-20260606-anomaly-capture-offline-replay-pipeline.md`（管线）、
+> `adp-20260606-anomaly-capture-dev-build-only.md`（dev/prod 隔离）。
 > 真实测试阶段的支撑能力：在使用扩展时捕获"不合理的异常"，落成 Agent 可
 > 确定性重放的离线 fixture。本阶段只做端到端**闭环骨架**，复用 daemon /
 > auth / 存储 / MCP，不追求 polish。
+>
+> **隔离约束：** 采集只进 dev 构建（`build:dev` + `manifest.dev.json` +
+> `content.dev.js`），产品构建零 anomaly 代码；app.ts 仅留惰性 instrumentation
+> 接缝。已落地并经 e2e 验证。
 
 ## 阶段目标
 

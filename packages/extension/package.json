@@ -6,6 +6,7 @@
   "scripts": {
     "check": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build-lib.json",
+    "build:dev": "tsc -p tsconfig.build.dev.json && tsc -p tsconfig.build-lib.json",
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
