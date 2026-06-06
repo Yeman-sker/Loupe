@@ -10,13 +10,13 @@
     "default_title": "Loupe"
   },
   "background": {
-    "service_worker": "src/background.js",
+    "service_worker": "src/mv3/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/content.js"],
+      "js": ["src/mv3/content.js"],
       "run_at": "document_idle"
     }
   ],

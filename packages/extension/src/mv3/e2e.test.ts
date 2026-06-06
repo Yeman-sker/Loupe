@@ -25,7 +25,7 @@ import {
   sync_annotation_to_daemon,
   type DaemonFetch,
   type MarkStore,
-} from "./phase2-storage.js";
+} from "../storage/phase2-storage.js";
 
 const PROJECT_ID = "project-alpha";
 const OTHER_PROJECT_ID = "project-beta";
@@ -113,7 +113,7 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
 
   it("MV3 manifest content script is an API-only authorization bootstrap", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { content_scripts: Array<{ js: string[] }> };
-    assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/content.js"]);
+    assert.deepEqual(manifest.content_scripts.flatMap((script) => script.js), ["src/mv3/content.js"]);
     const content_path = path.join(EXTENSION_ROOT, manifest.content_scripts[0]?.js[0] ?? "");
     const source = await readFile(content_path, "utf8");
     const bootstrap_body = function_body(source, "bootstrapAuthorizedContent");
@@ -217,7 +217,7 @@ describe("Phase 4 MV3 E2E/regression scenarios", () => {
 
   it("MV3 manifest background service-worker wake retries locals then reconciles daemon-only marks", async () => {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as { background: { service_worker: string } };
-    assert.equal(manifest.background.service_worker, "src/background.js");
+    assert.equal(manifest.background.service_worker, "src/mv3/background.js");
     const local = sample_annotation({ id: "mark-local-retry" });
     const failed_newer = {
       ...sample_annotation({ id: "mark-preserve-local" }),

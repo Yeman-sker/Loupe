@@ -6,7 +6,7 @@
   "scripts": {
     "check": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build-lib.json",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@loupe-server/shared": "workspace:*"

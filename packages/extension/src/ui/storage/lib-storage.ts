@@ -4,7 +4,7 @@
 // (fnv1a, route_key_from_url, transient_session_id) are copied verbatim from
 // phase2-storage.ts; all schema types are imported from ./schema.js.
 //
-// Source of truth for the exported functions: packages/extension/src/phase2-storage.ts
+// Source of truth for the exported functions: packages/extension/src/storage/phase2-storage.ts
 // Source of truth for types: packages/shared/src/schema.ts (via ./schema.js)
 
 import {
