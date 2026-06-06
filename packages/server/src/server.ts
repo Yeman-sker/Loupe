@@ -6,8 +6,10 @@ import {
   error_codes,
   LOUPE_DAEMON_NAME,
   LOUPE_DEFAULT_PORT,
+  summarize_anomaly,
   type AgentMark,
   type Annotation,
+  type AnomalyReport,
   type DeleteMarkResponse,
   type HealthPayload,
   type ListMarksResponse,
@@ -16,7 +18,7 @@ import {
   type StorageEnvelope,
 } from "@loupe-server/shared";
 
-import { getAnomaly, listAnomalies, writeAnomaly } from "./anomaly-store.js";
+import { anomalyReplayRecipe, getAnomaly, isAnomalyId, listAnomalyReports, writeAnomaly } from "./anomaly-store.js";
 import { appendDaemonLog } from "./daemon-log.js";
 import {
   homeHashForHome,
@@ -264,8 +266,8 @@ function mcpTools(): unknown[] {
     { name: "get_mark", description: "Get one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
     { name: "resolve_mark", description: "Resolve one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, resolution_note: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
     { name: "delete_mark", description: "Delete one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
-    { name: "list_anomalies", description: "List captured Loupe anomalies, newest first; optional project_id filter.", inputSchema: { type: "object", properties: { project_id: { type: "string" } }, additionalProperties: true } },
-    { name: "get_anomaly", description: "Get one captured Loupe anomaly by id, including its offline replay recipe.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: true } },
+    { name: "list_anomalies", description: "List captured Loupe anomalies for one asserted project scope, newest first.", inputSchema: { type: "object", properties: scopeProperties, additionalProperties: true } },
+    { name: "get_anomaly", description: "Get one captured Loupe anomaly by id with a project assertion, including its offline replay recipe.", inputSchema: { type: "object", properties: { id: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
   ];
 }
 
@@ -297,16 +299,14 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
     return { error: result.error };
   }
   if (name === "list_anomalies") {
-    const projectId = stringArg(args, "project_id");
-    const anomalies = await listAnomalies(store.home);
-    return { result: { anomalies: projectId === undefined ? anomalies : anomalies.filter((anomaly) => anomaly.project_id === projectId) } };
+    const result = await listAssertedAnomalies(store.home, args);
+    if (result.kind === "ok") return { result: result.value };
+    return { error: result.error };
   }
   if (name === "get_anomaly") {
-    const id = stringArg(args, "id");
-    if (id === undefined) return { error: { code: error_codes.invalid_request, message: "Anomaly id is required." } };
-    const report = await getAnomaly(store.home, id);
-    if (report === undefined) return { error: { code: error_codes.not_found, message: "Anomaly not found." } };
-    return { result: report };
+    const result = await findAssertedAnomaly(store.home, args);
+    if (result.kind === "ok") return { result: { anomaly: result.report, replay: anomalyReplayRecipe(store.home, result.report) } };
+    return { error: result.error };
   }
   return { error: { code: error_codes.not_found, message: "Tool not found." } };
 }
@@ -405,19 +405,26 @@ async function handleAnomalies(request: IncomingMessage, response: ServerRespons
       return;
     }
     if (request.method === "GET") {
-      writeJson(response, 200, { anomalies: await listAnomalies(home) });
+      const result = await listAssertedAnomalies(home, Object.fromEntries(url.searchParams));
+      if (result.kind === "ok") writeJson(response, 200, result.value);
+      else {
+        await appendDaemonLog(home, "ERROR", `anomalies list failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(Object.fromEntries(url.searchParams)), console });
+        writeJson(response, 400, { error: result.error });
+      }
       return;
     }
   }
 
   const id = anomalyPathId(url.pathname);
   if (id !== undefined && request.method === "GET") {
-    const report = await getAnomaly(home, id);
-    if (report === undefined) {
-      writeJson(response, 404, { error: { code: error_codes.not_found, message: "Anomaly not found." } });
+    const args = { ...Object.fromEntries(url.searchParams), id };
+    const result = await findAssertedAnomaly(home, args);
+    if (result.kind === "ok") {
+      writeJson(response, 200, { anomaly: result.report, replay: anomalyReplayRecipe(home, result.report) });
       return;
     }
-    writeJson(response, 200, { anomaly: report });
+    await appendDaemonLog(home, "ERROR", `anomaly get failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
+    writeJson(response, result.error.code === error_codes.not_found ? 404 : 400, { error: result.error });
     return;
   }
 
@@ -518,6 +525,38 @@ function candidateForProject(project: { id: string; record: StorageEnvelope["pro
   };
   if (first.project.branch !== undefined) candidate.branch = first.project.branch;
   return candidate;
+}
+
+async function listAssertedAnomalies(home: string, args: Record<string, unknown>): Promise<{ kind: "ok"; value: { project: ProjectScopeCandidate; anomalies: ReturnType<typeof summarize_anomaly>[] } } | { kind: "error"; error: { code: string; message: string } }> {
+  if (!hasProjectAssertion(args)) return { kind: "error", error: { code: error_codes.scope_required, message: "Project scope is required." } };
+
+  const anomalies = (await listAnomalyReports(home)).filter((report) => anomalyAssertionMatches(report, args));
+  return { kind: "ok", value: { project: anomalies[0]?.project ?? emptyScopeProject(args), anomalies: anomalies.map(summarize_anomaly) } };
+}
+
+async function findAssertedAnomaly(home: string, args: Record<string, unknown>): Promise<{ kind: "ok"; report: AnomalyReport } | { kind: "error"; error: { code: string; message: string } }> {
+  const id = stringArg(args, "id");
+  if (id === undefined) return { kind: "error", error: { code: error_codes.invalid_request, message: "Anomaly id is required." } };
+  if (!isAnomalyId(id)) return { kind: "error", error: { code: error_codes.invalid_request, message: "Anomaly id must be a UUID." } };
+  if (!hasProjectAssertion(args)) return { kind: "error", error: { code: error_codes.scope_required, message: "Project assertion is required to read an anomaly." } };
+
+  const report = await getAnomaly(home, id);
+  if (report === undefined) return { kind: "error", error: { code: error_codes.not_found, message: "Anomaly not found." } };
+  if (!anomalyAssertionMatches(report, args)) return { kind: "error", error: { code: error_codes.assertion_mismatch, message: "Project assertion does not match anomaly." } };
+  return { kind: "ok", report };
+}
+
+function anomalyAssertionMatches(report: AnomalyReport, args: Record<string, unknown>): boolean {
+  const project = report.project;
+  if (project === undefined) return false;
+  const projectId = stringArg(args, "project_id");
+  if (projectId !== undefined && project.project_id !== projectId) return false;
+  if (projectId !== undefined && !hasAnyRouteAssertion(args)) return true;
+  return matchesOptional(project.workspace_root_hash, args, "workspace_root_hash") &&
+    matchesOptional(project.origin, args, "origin") &&
+    matchesOptional(project.url, args, "url") &&
+    matchesOptional(project.route_key, args, "route_key") &&
+    matchesOptional(project.session_id, args, "session_id");
 }
 
 function findAssertedMark(store: MarkStore, args: Record<string, unknown>, mutation: Mutation): { kind: "ok"; mark: Annotation; project: StorageEnvelope["projects"][string] } | { kind: "error"; error: { code: string; message: string } } {

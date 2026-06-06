@@ -70,6 +70,7 @@ export type InstrumentationApi = {
 
 export type Instrumentation = {
   breadcrumb?: (kind: string, detail?: string) => void;
+  readonly invariant?: (name: string, detail?: string) => void;
   attach?: (api: InstrumentationApi) => void;
   detach?: () => void;
 };

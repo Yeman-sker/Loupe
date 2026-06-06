@@ -224,6 +224,28 @@ describe("background daemon pairing", () => {
     });
   });
 
+  it("rejects non-loopback daemon URLs before sending the token", async () => {
+    const store: Record<string, unknown> = {};
+    let fetched = false;
+
+    const result = await pair_daemon(
+      {
+        get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+        set: async (items) => void Object.assign(store, items),
+      },
+      { type: "loupe.daemon.pair", daemon: { base_url: "https://evil.example.test", token: "secret-token" } },
+      "2026-01-01T00:00:00.000Z",
+      async () => {
+        fetched = true;
+        return Response.json({ ok: true, name: "loupe" });
+      },
+    );
+
+    assert.deepEqual(result, { ok: false, paired: false, error: "Daemon base_url must be loopback http." });
+    assert.equal(fetched, false);
+    assert.equal(store["loupe:v1:daemon"], undefined);
+  });
+
   it("reports missing token without writing daemon storage", async () => {
     const store: Record<string, unknown> = {};
 

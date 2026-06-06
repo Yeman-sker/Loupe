@@ -57,6 +57,16 @@ describe("anomaly snapshot serializer", () => {
     assert.equal(html, '<div id="host" data-loupe-target=""><template shadowrootmode="open"><span>shadow</span></template></div>');
   });
 
+  it("embeds same-origin iframe document roots when accessible", () => {
+    const frameRoot = new El("HTML").append(new El("BODY").append(new El("MAIN").append(text("inside"))));
+    const iframe = new El("IFRAME") as El & { contentDocument?: { documentElement: El } };
+    iframe.contentDocument = { documentElement: frameRoot };
+
+    const html = serializeAnomalySnapshot(iframe, { maxAncestors: 0 });
+
+    assert.equal(html, '<iframe data-loupe-target=""><template data-loupe-frame="same-origin"><html><body><main>inside</main></body></html></template></iframe>');
+  });
+
   it("escapes text and attribute values and closes void elements", () => {
     const img = new El("IMG").attr("alt", 'a "b" <c>');
     const root = new El("P").append(text("1 < 2 & 3"), img);

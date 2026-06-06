@@ -568,8 +568,9 @@ describe("Loupe anomaly capture contract", () => {
     assert.equal((await response.json()).error.code, error_codes.invalid_request);
   });
 
-  it("captures a manual anomaly, splits blobs to disk, and reads it back via HTTP and MCP", async () => {
-    const input = sampleAnomaly({ summary: "resolved pin landed on the wrong button", dom_html: "<main><button>A</button><button>B</button></main>", storage: { marks: [] } });
+  it("captures a manual anomaly, splits blobs to disk, and reads it back via scoped HTTP and MCP", async () => {
+    const project = { project_id: "anomaly-project", workspace_root_hash: "anomaly-root", origin: "https://example.test", url: "https://example.test/dashboard", route_key: "/dashboard", session_id: "anomaly-session" };
+    const input = sampleAnomaly({ summary: "resolved pin landed on the wrong button", expected: "button B should stay selected", actual: "button A became selected", project, dom_html: "<main><button>A</button><button>B</button></main>", storage: { [`loupe:v1:project:${project.project_id}:session:${project.session_id}:marks`]: [] } });
     const created = await fetch(`${baseUrl}/v1/anomalies`, {
       method: "POST",
       headers: { ...authHeaders(token), "content-type": "application/json" },
@@ -577,7 +578,7 @@ describe("Loupe anomaly capture contract", () => {
     });
     assert.equal(created.status, 200);
     const report = ((await created.json()) as { anomaly: AnomalyReport }).anomaly;
-    assert.match(report.id, /[0-9a-f-]{36}/);
+    assert.match(report.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     assert.equal(typeof report.created_at, "string");
     assert.equal(report.has_dom, true);
     assert.equal(report.has_storage, true);
@@ -589,31 +590,69 @@ describe("Loupe anomaly capture contract", () => {
     const onDisk = JSON.parse(await readFile(join(home, "anomalies", report.id, "report.json"), "utf8")) as Record<string, unknown>;
     assert.equal(onDisk.dom_html, undefined);
 
-    // HTTP list returns a low-noise summary without blobs.
-    const list = await fetch(`${baseUrl}/v1/anomalies`, { headers: authHeaders(token) });
-    const summaries = ((await list.json()) as { anomalies: AnomalySummary[] }).anomalies;
+    const unscopedList = await fetch(`${baseUrl}/v1/anomalies`, { headers: authHeaders(token) });
+    assert.equal(unscopedList.status, 400);
+    assert.equal(((await unscopedList.json()) as { error: { code: string } }).error.code, error_codes.scope_required);
+
+    const scopedList = await fetch(`${baseUrl}/v1/anomalies?project_id=${project.project_id}`, { headers: authHeaders(token) });
+    assert.equal(scopedList.status, 200);
+    const summaries = ((await scopedList.json()) as { anomalies: AnomalySummary[] }).anomalies;
     const summary = summaries.find((item) => item.id === report.id);
     assert.ok(summary !== undefined);
     assert.equal(summary.summary, "resolved pin landed on the wrong button");
     assert.equal(summary.locator_status, "resolved");
     assert.equal((summary as Record<string, unknown>).breadcrumbs, undefined);
 
-    // HTTP get returns the full report.
-    const got = await fetch(`${baseUrl}/v1/anomalies/${report.id}`, { headers: authHeaders(token) });
-    assert.equal(got.status, 200);
-    assert.deepEqual(((await got.json()) as { anomaly: AnomalyReport }).anomaly, report);
+    const workspaceList = await fetch(`${baseUrl}/v1/anomalies?workspace_root_hash=${project.workspace_root_hash}`, { headers: authHeaders(token) });
+    assert.equal(workspaceList.status, 200);
+    assert.ok(((await workspaceList.json()) as { anomalies: AnomalySummary[] }).anomalies.some((item) => item.id === report.id));
 
-    // MCP get_anomaly returns the same report; list_anomalies includes the summary.
-    const mcpGet = await callMcpTool(baseUrl, token, "get_anomaly", { id: report.id }, "anomaly-mcp-get");
-    assert.deepEqual(mcpStructuredContent(mcpGet), report);
-    const mcpList = await callMcpTool(baseUrl, token, "list_anomalies", {}, "anomaly-mcp-list");
+    const unscopedGet = await fetch(`${baseUrl}/v1/anomalies/${report.id}`, { headers: authHeaders(token) });
+    assert.equal(unscopedGet.status, 400);
+    assert.equal(((await unscopedGet.json()) as { error: { code: string } }).error.code, error_codes.scope_required);
+
+    const got = await fetch(`${baseUrl}/v1/anomalies/${report.id}?project_id=${project.project_id}`, { headers: authHeaders(token) });
+    assert.equal(got.status, 200);
+    const gotPayload = (await got.json()) as { anomaly: AnomalyReport; replay: { anomaly_id: string; dom_path?: string; storage_path?: string; suggested_test_path: string; expected?: string; actual?: string; breadcrumbs: unknown[] } };
+    assert.deepEqual(gotPayload.anomaly, report);
+    assert.equal(gotPayload.replay.anomaly_id, report.id);
+    assert.match(gotPayload.replay.dom_path ?? "", /dom\.html$/);
+    assert.match(gotPayload.replay.storage_path ?? "", /storage\.json$/);
+    assert.match(gotPayload.replay.suggested_test_path, new RegExp(`${report.id}\\.repro\\.test\\.ts$`));
+    assert.equal(gotPayload.replay.expected, "button B should stay selected");
+    assert.equal(gotPayload.replay.actual, "button A became selected");
+    assert.deepEqual(gotPayload.replay.breadcrumbs, report.breadcrumbs);
+
+    const mismatch = await fetch(`${baseUrl}/v1/anomalies/${report.id}?project_id=other-project`, { headers: authHeaders(token) });
+    assert.equal(mismatch.status, 400);
+    assert.equal(((await mismatch.json()) as { error: { code: string } }).error.code, error_codes.assertion_mismatch);
+
+    const mcpUnscopedGet = await callMcpTool(baseUrl, token, "get_anomaly", { id: report.id }, "anomaly-mcp-unscoped-get");
+    assert.equal(mcpUnscopedGet.error?.data?.code, error_codes.scope_required);
+    const mcpGet = await callMcpTool(baseUrl, token, "get_anomaly", { id: report.id, project_id: project.project_id }, "anomaly-mcp-get");
+    const mcpGetPayload = mcpStructuredContent(mcpGet) as { anomaly: AnomalyReport; replay: { anomaly_id: string; expected?: string; actual?: string } };
+    assert.deepEqual(mcpGetPayload.anomaly, report);
+    assert.equal(mcpGetPayload.replay.anomaly_id, report.id);
+    assert.equal(mcpGetPayload.replay.expected, "button B should stay selected");
+    const mcpUnscopedList = await callMcpTool(baseUrl, token, "list_anomalies", {}, "anomaly-mcp-unscoped-list");
+    assert.equal(mcpUnscopedList.error?.data?.code, error_codes.scope_required);
+    const mcpList = await callMcpTool(baseUrl, token, "list_anomalies", { workspace_root_hash: project.workspace_root_hash }, "anomaly-mcp-list");
     const mcpSummaries = (mcpStructuredContent(mcpList) as { anomalies: AnomalySummary[] }).anomalies;
     assert.ok(mcpSummaries.some((item) => item.id === report.id));
   });
 
-  it("returns NOT_FOUND for an unknown anomaly id over MCP", async () => {
-    const body = await callMcpTool(baseUrl, token, "get_anomaly", { id: "missing" }, "anomaly-missing");
+  it("returns NOT_FOUND for an unknown valid anomaly id over MCP", async () => {
+    const body = await callMcpTool(baseUrl, token, "get_anomaly", { id: "00000000-0000-4000-8000-000000000000", project_id: "missing-project" }, "anomaly-missing");
     assert.equal(body.error?.data?.code, error_codes.not_found);
+  });
+
+  it("rejects invalid anomaly ids before filesystem lookup", async () => {
+    const rest = await fetch(`${baseUrl}/v1/anomalies/%2e%2e%2fmarks.json?project_id=project-123`, { headers: authHeaders(token) });
+    assert.equal(rest.status, 400);
+    assert.equal(((await rest.json()) as { error: { code: string } }).error.code, error_codes.invalid_request);
+
+    const mcp = await callMcpTool(baseUrl, token, "get_anomaly", { id: "../marks.json", project_id: "project-123" }, "anomaly-invalid-id");
+    assert.equal(mcp.error?.data?.code, error_codes.invalid_request);
   });
 });
 
@@ -649,18 +688,24 @@ describe("Loupe anomalies repro CLI", () => {
     assert.match(source, /did not return the captured target element/);
   });
 
-  it("fails clearly for an unknown anomaly id", async () => {
+  it("fails clearly for an unknown valid anomaly id", async () => {
     const home = await mkdtemp(join(tmpdir(), "loupe-repro-"));
-    const code = await anomalies({ anomaliesAction: "repro", anomalyId: "nope", home, out: join(home, "x.ts") }, silentStream(), silentStream());
+    const code = await anomalies({ anomaliesAction: "repro", anomalyId: "00000000-0000-4000-8000-000000000000", home, out: join(home, "x.ts") }, silentStream(), silentStream());
+    assert.equal(code, 1);
+  });
+
+  it("rejects path-traversal-shaped anomaly ids before reading dom.html", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-repro-"));
+    const code = await anomalies({ anomaliesAction: "repro", anomalyId: "../marks.json", home, out: join(home, "x.ts") }, silentStream(), silentStream());
     assert.equal(code, 1);
   });
 
   it("parses the anomalies repro command", () => {
-    assert.deepEqual(parseCli(["anomalies", "repro", "abc", "--out", "/tmp/x.ts"]), {
+    assert.deepEqual(parseCli(["anomalies", "repro", "00000000-0000-4000-8000-000000000000", "--out", "/tmp/x.ts"]), {
       command: "anomalies",
       port: LOUPE_DEFAULT_PORT,
       anomaliesAction: "repro",
-      anomalyId: "abc",
+      anomalyId: "00000000-0000-4000-8000-000000000000",
       out: "/tmp/x.ts",
     });
   });

@@ -22,6 +22,7 @@ type SnapshotElement = SnapshotNode & {
   readonly childNodes: ArrayLike<SnapshotNode>;
   readonly parentElement: SnapshotElement | null;
   readonly shadowRoot?: { readonly childNodes: ArrayLike<SnapshotNode> } | null;
+  readonly contentDocument?: { readonly documentElement?: SnapshotElement | null } | null;
 };
 
 export type SnapshotOptions = {
@@ -72,6 +73,14 @@ function serializeNode(node: SnapshotNode, target: SnapshotElement, markerAttr: 
     out.push(`<template shadowrootmode="open">`);
     serializeChildren(el.shadowRoot.childNodes, target, markerAttr, out);
     out.push(`</template>`);
+  }
+  if (tag === "iframe") {
+    const frameRoot = el.contentDocument?.documentElement ?? null;
+    if (frameRoot !== null) {
+      out.push(`<template data-loupe-frame="same-origin">`);
+      serializeNode(frameRoot, target, markerAttr, out);
+      out.push(`</template>`);
+    }
   }
   serializeChildren(el.childNodes, target, markerAttr, out);
   out.push(`</${tag}>`);

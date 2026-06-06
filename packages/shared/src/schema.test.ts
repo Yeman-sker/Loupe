@@ -22,6 +22,7 @@ import {
   type ResolveResult,
   type StorageEnvelope,
 } from "./schema.js";
+import { is_anomaly_report_input } from "./anomaly.js";
 
 describe("Loupe Phase 0 schema and storage contracts", () => {
   it("storage key helpers include global, project_id, and session_id keys", () => {
@@ -239,6 +240,21 @@ describe("Loupe Phase 0 schema and storage contracts", () => {
     assert.equal(is_locator({ ...sampleLocator(), locatorStatus: "resolved" }), false);
     assert.equal(is_resolve_result({ ...resolveResult, locatorStatus: resolveResult.locator_status }), false);
     assert.equal(is_agent_mark({ ...sampleAgentMark(sampleLocator()), target: { ...sampleAgentMark(sampleLocator()).target, locatorStatus: "resolved" } }), false);
+  });
+
+  it("AnomalyReportInput accepts only scoped mark storage blobs", () => {
+    const valid = {
+      schema_version: LOUPE_SCHEMA_VERSION,
+      source: "manual",
+      summary: "wrong pin",
+      breadcrumbs: [],
+      env: {},
+      storage: { "loupe:v1:project:project-1:session:session-1:marks": [] },
+    };
+
+    assert.equal(is_anomaly_report_input(valid), true);
+    assert.equal(is_anomaly_report_input({ ...valid, storage: { marks: [] } }), false);
+    assert.equal(is_anomaly_report_input({ ...valid, storage: { "loupe:v1:daemon": { token: "secret" } } }), false);
   });
 
   it("M3 error codes export the project scope, auth, assertion, and store failures", () => {

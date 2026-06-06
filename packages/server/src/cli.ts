@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { appendDaemonLog, createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, summarizeMarkStore, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 import { fileURLToPath } from "node:url";
 import { runMcpProxy } from "./mcp-proxy.js";
-import { anomalyDirForId, getAnomaly } from "./anomaly-store.js";
+import { anomalyDirForId, getAnomaly, isAnomalyId } from "./anomaly-store.js";
 import { assert_storage_envelope, generate_repro_test, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe-server/shared";
 
 export type CliCommand = "serve" | "ensure" | "init" | "status" | "logs" | "mcp-proxy" | "anomalies";
@@ -325,6 +325,10 @@ export async function anomalies(
 
   const home = resolveLoupeHome(options.home);
   const id = options.anomalyId;
+  if (!isAnomalyId(id)) {
+    writeLine(stderr, "Anomaly id must be a UUID.");
+    return 1;
+  }
   const report = await getAnomaly(home, id);
   if (report === undefined) {
     writeLine(stderr, `No anomaly bundle found for id ${id} under ${home}.`);

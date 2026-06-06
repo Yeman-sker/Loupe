@@ -66,6 +66,19 @@ export type AnomalySummary = {
   locator_status?: string;
 };
 
+export type AnomalyReplayRecipe = {
+  readonly anomaly_id: string;
+  readonly report_path: string;
+  readonly dom_path?: string;
+  readonly storage_path?: string;
+  readonly suggested_test_path: string;
+  readonly generator: "loupe anomalies repro";
+  readonly expected?: string;
+  readonly actual?: string;
+  readonly error?: AnomalyError;
+  readonly breadcrumbs: AnomalyBreadcrumb[];
+};
+
 export function is_anomaly_report_input(value: unknown): value is AnomalyReportInput {
   if (!is_record(value) || !has_no_known_camel_case_fields(value)) return false;
   if (value.schema_version !== LOUPE_SCHEMA_VERSION) return false;
@@ -75,6 +88,7 @@ export function is_anomaly_report_input(value: unknown): value is AnomalyReportI
   if (!is_record(value.env)) return false;
   if (value.error !== undefined && !is_anomaly_error(value.error)) return false;
   if (value.dom_html !== undefined && typeof value.dom_html !== "string") return false;
+  if (value.storage !== undefined && !is_anomaly_storage(value.storage)) return false;
   return true;
 }
 
@@ -92,6 +106,11 @@ function is_anomaly_error(value: unknown): value is AnomalyError {
   if (value.name !== undefined && typeof value.name !== "string") return false;
   if (value.stack !== undefined && typeof value.stack !== "string") return false;
   return true;
+}
+
+function is_anomaly_storage(value: unknown): boolean {
+  if (!is_record(value)) return false;
+  return Object.entries(value).every(([key, item]) => key.startsWith("loupe:v1:project:") && key.includes(":session:") && key.endsWith(":marks") && Array.isArray(item));
 }
 
 export function locator_status_of(resolve_result: unknown): string | undefined {

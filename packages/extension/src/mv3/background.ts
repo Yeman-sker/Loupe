@@ -104,6 +104,8 @@ const LOUPE_AUTH_SCHEME = "Bearer";
 const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
 const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
 const LOUPE_DAEMON_NAME = "loupe";
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 export function origin_from_message_or_sender(message: unknown, sender: ChromeMessageSender): string | undefined {
   if (is_record(message) && typeof message.origin === "string") return origin_from_url_or_origin(message.origin);
   const sender_url = sender.tab?.url ?? sender.url;
@@ -234,6 +236,7 @@ export async function pair_daemon(
   const input = is_record(message) && is_record(message.daemon) ? message.daemon : message;
   if (!is_record(input)) return { ok: false, paired: false, error: "Daemon pairing payload is required" };
   const base_url = typeof input.base_url === "string" && input.base_url.length > 0 ? input.base_url : LOUPE_DAEMON_BASE_URL;
+  if (!is_loopback_daemon_url(base_url)) return { ok: false, paired: false, error: "Daemon base_url must be loopback http." };
   if (typeof input.token !== "string" || input.token.length === 0) return { ok: false, paired: false, token_missing: true, error: "Daemon token is required" };
 
   let health: unknown;
@@ -399,7 +402,17 @@ async function stored_daemon(storage: ChromeLike["storage"]["local"]): Promise<D
 function read_daemon_credentials(value: unknown): DaemonCredentials | undefined {
   if (!is_record(value)) return undefined;
   if (typeof value.base_url !== "string" || typeof value.token !== "string" || value.base_url.length === 0 || value.token.length === 0) return undefined;
+  if (!is_loopback_daemon_url(value.base_url)) return undefined;
   return { base_url: value.base_url, token: value.token };
+}
+
+function is_loopback_daemon_url(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function retry_local_mark(
