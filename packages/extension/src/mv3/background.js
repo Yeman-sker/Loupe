@@ -4,9 +4,15 @@ const MESSAGE_TYPES = Object.freeze({
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
   TOGGLE_STATUS_BAR: "loupe.status_bar.toggle",
   CONTENT_PROBE: "loupe.content.probe",
+  CAPTURE_ANOMALY: "loupe.anomaly.capture",
 });
 
 const LOUPE_AUTH_SCHEME = "Bearer";
+
+// Pairing key: daemon base_url + token live in extension storage so the service
+// worker can authenticate UI-triggered daemon writes without exposing the token
+// to the page. Populated by pairing (PRD §10.4) or seeded in tests.
+const DAEMON_CREDENTIALS_KEY = "loupe:v1:daemon";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.session.set({
@@ -145,8 +151,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.CAPTURE_ANOMALY) {
+    void handleCaptureAnomaly(message).then(sendResponse, (error) => {
+      sendResponse({ ok: false, error: errorMessage(error) });
+    });
+    return true;
+  }
+
   return false;
 });
+
+async function daemonCredentials(message) {
+  const fromMessage = wakeDaemon(message);
+  if (fromMessage) return fromMessage;
+  const stored = await chrome.storage.local.get(DAEMON_CREDENTIALS_KEY);
+  return wakeDaemon({ daemon: stored?.[DAEMON_CREDENTIALS_KEY] });
+}
+
+async function handleCaptureAnomaly(message) {
+  const daemon = await daemonCredentials(message);
+  const report = isObject(message) && isObject(message.report) ? message.report : null;
+  if (!daemon) return { ok: false, error: "Missing daemon credentials" };
+  if (!report) return { ok: false, error: "Missing anomaly report" };
+  try {
+    const response = await fetch(joinDaemonUrl(daemon.base_url, "/v1/anomalies"), {
+      method: "POST",
+      headers: { ...authorizedHeaders(daemon.token), "content-type": "application/json" },
+      body: JSON.stringify(report),
+    });
+    if (!response.ok) throw new Error(`POST /v1/anomalies failed with ${response.status}`);
+    const payload = await response.json().catch(() => null);
+    const id = isObject(payload) && isObject(payload.anomaly) && typeof payload.anomaly.id === "string" ? payload.anomaly.id : undefined;
+    return id === undefined ? { ok: true } : { ok: true, id };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
 
 async function handleGetOriginAuth(message, sender) {
   const origin = originFromMessageOrSender(message, sender);

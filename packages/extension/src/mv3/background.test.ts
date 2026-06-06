@@ -5,10 +5,14 @@ import { decide_origin_authorization, handle_capture_anomaly, handle_service_wor
 describe("background anomaly capture", () => {
   const daemon = { base_url: "http://127.0.0.1:7373", token: "secret-token" };
   const report = { schema_version: 1, source: "manual", summary: "wrong pin", breadcrumbs: [], env: {} };
+  const fakeStorage = (local: Record<string, unknown> = {}) => ({
+    session: { set: async () => undefined },
+    local: { get: async (key: unknown) => (typeof key === "string" ? { [key]: local[key] } : { ...local }), set: async () => undefined },
+  });
 
   it("POSTs the report with the bearer token and returns the created id", async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    const result = await handle_capture_anomaly({ type: "loupe.anomaly.capture", daemon, report }, async (url, init) => {
+    const result = await handle_capture_anomaly(fakeStorage(), { type: "loupe.anomaly.capture", daemon, report }, async (url, init) => {
       calls.push({ url: String(url), init });
       return Response.json({ anomaly: { id: "anomaly-1" } });
     });
@@ -20,15 +24,26 @@ describe("background anomaly capture", () => {
     assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), report);
   });
 
+  it("falls back to paired daemon credentials in storage", async () => {
+    const storage = fakeStorage({ "loupe:v1:daemon": daemon });
+    let authorization = "";
+    const result = await handle_capture_anomaly(storage, { report }, async (_url, init) => {
+      authorization = (init?.headers as Record<string, string>).authorization ?? "";
+      return Response.json({ anomaly: { id: "anomaly-paired" } });
+    });
+    assert.deepEqual(result, { ok: true, id: "anomaly-paired" });
+    assert.equal(authorization, "Bearer secret-token");
+  });
+
   it("reports failure on a non-ok daemon response without throwing", async () => {
-    const result = await handle_capture_anomaly({ daemon, report }, async () => new Response("nope", { status: 500 }));
+    const result = await handle_capture_anomaly(fakeStorage(), { daemon, report }, async () => new Response("nope", { status: 500 }));
     assert.equal(result.ok, false);
     assert.match(String(result.error), /500/);
   });
 
   it("refuses to POST without daemon credentials", async () => {
     let called = false;
-    const result = await handle_capture_anomaly({ report }, async () => {
+    const result = await handle_capture_anomaly(fakeStorage(), { report }, async () => {
       called = true;
       return Response.json({});
     });

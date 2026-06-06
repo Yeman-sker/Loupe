@@ -1,7 +1,7 @@
 // Bounded ring buffer of recent user/runtime actions. On an anomaly we attach a
 // snapshot of the last N breadcrumbs so an agent can see what led up to it.
 
-import type { AnomalyBreadcrumb } from "@loupe-server/shared";
+import type { AnomalyBreadcrumb } from "../schema.js";
 
 export class BreadcrumbBuffer {
   private readonly items: AnomalyBreadcrumb[] = [];

@@ -250,8 +250,20 @@ export async function handle_service_worker_wake(
   }
 }
 
-export async function handle_capture_anomaly(message: unknown, fetch_like: FetchLike = fetch): Promise<Record<string, unknown>> {
-  const daemon = wake_daemon(message);
+// Pairing key: the daemon base_url + token live in extension storage so the
+// service worker can authenticate UI-triggered daemon writes without exposing
+// the token to the page. Populated by pairing (PRD §10.4) or seeded in tests.
+export const DAEMON_CREDENTIALS_KEY = "loupe:v1:daemon";
+
+async function daemon_credentials(storage: ChromeLike["storage"]["local"], message: unknown): Promise<DaemonCredentials | undefined> {
+  const from_message = wake_daemon(message);
+  if (from_message !== undefined) return from_message;
+  const stored = await storage.get(DAEMON_CREDENTIALS_KEY);
+  return wake_daemon({ daemon: stored[DAEMON_CREDENTIALS_KEY] });
+}
+
+export async function handle_capture_anomaly(storage: ChromeLike["storage"], message: unknown, fetch_like: FetchLike = fetch): Promise<Record<string, unknown>> {
+  const daemon = await daemon_credentials(storage.local, message);
   const report = is_record(message) && is_record(message.report) ? message.report : undefined;
   if (daemon === undefined) return { ok: false, error: "Missing daemon credentials" };
   if (report === undefined) return { ok: false, error: "Missing anomaly report" };
@@ -307,7 +319,7 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
     }
 
     if (message.type === MESSAGE_TYPES.CAPTURE_ANOMALY) {
-      void handle_capture_anomaly(message).then(
+      void handle_capture_anomaly(chrome_like.storage, message).then(
         sendResponse,
         (error) => sendResponse({ ok: false, error: error_message(error) }),
       );

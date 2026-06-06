@@ -1,7 +1,7 @@
 // Assembles an AnomalyReportInput from captured pieces. Kept as the single seam
 // that stamps schema_version and applies exactOptionalPropertyTypes-safe defaults.
 
-import { LOUPE_SCHEMA_VERSION, type AnomalyBreadcrumb, type AnomalyEnv, type AnomalyError, type AnomalyReportInput, type AnomalySource, type Locator, type ProjectScopeCandidate } from "@loupe-server/shared";
+import { LOUPE_SCHEMA_VERSION, type AnomalyBreadcrumb, type AnomalyEnv, type AnomalyError, type AnomalyReportInput, type AnomalySource, type Locator, type ProjectScopeCandidate } from "../schema.js";
 
 export type AnomalyDraft = {
   source: AnomalySource;
