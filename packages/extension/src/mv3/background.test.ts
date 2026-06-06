@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decide_origin_authorization, handle_service_worker_wake, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
+import { decide_origin_authorization, handle_capture_anomaly, handle_service_worker_wake, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
+
+describe("background anomaly capture", () => {
+  const daemon = { base_url: "http://127.0.0.1:7373", token: "secret-token" };
+  const report = { schema_version: 1, source: "manual", summary: "wrong pin", breadcrumbs: [], env: {} };
+
+  it("POSTs the report with the bearer token and returns the created id", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const result = await handle_capture_anomaly({ type: "loupe.anomaly.capture", daemon, report }, async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json({ anomaly: { id: "anomaly-1" } });
+    });
+
+    assert.deepEqual(result, { ok: true, id: "anomaly-1" });
+    assert.equal(calls[0]?.url, "http://127.0.0.1:7373/v1/anomalies");
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.equal((calls[0]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), report);
+  });
+
+  it("reports failure on a non-ok daemon response without throwing", async () => {
+    const result = await handle_capture_anomaly({ daemon, report }, async () => new Response("nope", { status: 500 }));
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /500/);
+  });
+
+  it("refuses to POST without daemon credentials", async () => {
+    let called = false;
+    const result = await handle_capture_anomaly({ report }, async () => {
+      called = true;
+      return Response.json({});
+    });
+    assert.equal(result.ok, false);
+    assert.equal(called, false);
+  });
+});
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {

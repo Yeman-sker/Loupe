@@ -6,6 +6,7 @@ export const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
+  CAPTURE_ANOMALY: "loupe.anomaly.capture",
 });
 
 export type ChromeLike = {
@@ -249,6 +250,27 @@ export async function handle_service_worker_wake(
   }
 }
 
+export async function handle_capture_anomaly(message: unknown, fetch_like: FetchLike = fetch): Promise<Record<string, unknown>> {
+  const daemon = wake_daemon(message);
+  const report = is_record(message) && is_record(message.report) ? message.report : undefined;
+  if (daemon === undefined) return { ok: false, error: "Missing daemon credentials" };
+  if (report === undefined) return { ok: false, error: "Missing anomaly report" };
+
+  try {
+    const response = await fetch_like(join_daemon_url(daemon.base_url, "/v1/anomalies"), {
+      method: "POST",
+      headers: { ...authorized_headers(daemon.token), "content-type": "application/json" },
+      body: JSON.stringify(report),
+    });
+    if (!response.ok) throw new Error(`POST /v1/anomalies failed with ${response.status}`);
+    const payload: unknown = await response.json();
+    const id = is_record(payload) && is_record(payload.anomaly) && typeof payload.anomaly.id === "string" ? payload.anomaly.id : undefined;
+    return id === undefined ? { ok: true } : { ok: true, id };
+  } catch (error) {
+    return { ok: false, error: error_message(error) };
+  }
+}
+
 export function install_background_listeners(chrome_like: ChromeLike, now: () => string = () => new Date().toISOString()): void {
   chrome_like.runtime.onInstalled.addListener(() => {
     void persist_service_worker_wake(chrome_like.storage, now());
@@ -278,6 +300,14 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
 
     if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
       void handle_service_worker_wake(chrome_like.storage, message, now()).then(
+        sendResponse,
+        (error) => sendResponse({ ok: false, error: error_message(error) }),
+      );
+      return true;
+    }
+
+    if (message.type === MESSAGE_TYPES.CAPTURE_ANOMALY) {
+      void handle_capture_anomaly(message).then(
         sendResponse,
         (error) => sendResponse({ ok: false, error: error_message(error) }),
       );
