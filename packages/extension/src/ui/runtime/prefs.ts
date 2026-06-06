@@ -1,5 +1,5 @@
-import type { Theme } from "./host.js";
-import type { Lang } from "./i18n.js";
+import type { Theme } from "../core/host.js";
+import type { Lang } from "../core/i18n.js";
 import type { UiStorage } from "./app.js";
 
 const PREFS_KEY = "loupe:v1:ui:prefs";

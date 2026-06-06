@@ -1,5 +1,5 @@
 // Storage bridge for dist/ui — re-implements the subset of phase2-storage.ts
-// functions needed by UI-1. Imports types from "./schema.js" (relative) so the
+// functions needed by UI-1. Imports types from "../schema.js" (relative) so the
 // browser module graph stays free of bare specifiers. The algorithmic helpers
 // (fnv1a, route_key_from_url, transient_session_id) are copied verbatim from
 // phase2-storage.ts; all schema types are imported from ./schema.js.
@@ -17,13 +17,13 @@ import {
   type Locator,
   type ProjectScopeWithUrl,
   type ResolveResult,
-} from "./schema.js";
+} from "../schema.js";
 
-export { storage_keys } from "./schema.js";
+export { storage_keys } from "../schema.js";
 
-export type { Annotation } from "./schema.js";
+export type { Annotation } from "../schema.js";
 
-export type { IntentKind } from "./schema.js";
+export type { IntentKind } from "../schema.js";
 
 export type ProjectEntry = {
   id: string;

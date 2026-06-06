@@ -1,8 +1,8 @@
 // Surface 8 — Page-level fallback. Shown bottom-center when daemon is offline.
 // Saves still succeed (local-first); this card is informational, not an error.
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
 
 export type FallbackOpts = {
   t: Translate;

@@ -1,6 +1,6 @@
-import type { Annotation, AnnotationContextDraft, ProjectEntry } from "./lib-storage.js";
-import type { PinRecord } from "./surface-pin.js";
-export type { ProjectEntry } from "./lib-storage.js";
+import type { Annotation, AnnotationContextDraft, ProjectEntry } from "../storage/lib-storage.js";
+import type { PinRecord } from "../surfaces/pin.js";
+export type { ProjectEntry } from "../storage/lib-storage.js";
 
 export function annotationToPinRecord(ann: Annotation, num: number, doc: Document): PinRecord {
   const syncStatus = ann.sync.status;

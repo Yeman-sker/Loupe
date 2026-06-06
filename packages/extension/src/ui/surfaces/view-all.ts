@@ -2,10 +2,10 @@
 // current route/session. Supports "Show done" toggle, jump-to-element, and
 // Copy all Markdown (promoted to primary when any mark is unsynced).
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
-import { type PinRecord } from "./surface-pin.js";
-import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken } from "./status-tokens.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
+import { type PinRecord } from "./pin.js";
+import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken } from "../core/status-tokens.js";
 
 export type ViewAllOpts = {
   t: Translate;

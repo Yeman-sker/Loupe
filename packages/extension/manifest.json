@@ -22,7 +22,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["dist/ui/*.js", "dist/ui/*.js.map", "assets/fonts/*.woff2"],
+      "resources": ["dist/ui/*.js", "dist/ui/*.js.map", "dist/ui/*/*.js", "dist/ui/*/*.js.map", "assets/fonts/*.woff2"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ]

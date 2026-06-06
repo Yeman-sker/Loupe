@@ -47,7 +47,7 @@
   function loadSurfaceRuntime(authorized) {
     if (typeof chrome?.runtime?.getURL !== "function") return;
     try {
-      void import(chrome.runtime.getURL("dist/ui/app.js"))
+      void import(chrome.runtime.getURL("dist/ui/runtime/app.js"))
         .then((mod) => mod.mount({ baseUrl: chrome.runtime.getURL(""), document, storage: chrome.storage && chrome.storage.local, authorized }))
         .then((app) => { mountedApp = app; })
         .catch(() => {});

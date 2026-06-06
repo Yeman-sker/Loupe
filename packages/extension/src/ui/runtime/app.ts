@@ -3,9 +3,9 @@
 //   ready → picking → intent → pin (saved to chrome.storage.local)
 // All surfaces live inside the Shadow DOM host from host.ts.
 
-import { createSurfaceHost, SURFACE_ROOT_ID } from "./host.js";
-import { createI18n } from "./i18n.js";
-import { capture_locator, resolve } from "./schema.js";
+import { createSurfaceHost, SURFACE_ROOT_ID } from "../core/host.js";
+import { createI18n } from "../core/i18n.js";
+import { capture_locator, resolve } from "../schema.js";
 import {
   create_annotation,
   project_scope_from_url,
@@ -18,17 +18,17 @@ import {
   type Annotation,
   type AnnotationDraft,
   type IntentKind,
-} from "./lib-storage.js";
-import { renderReady } from "./surface-ready.js";
-import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "./surface-picker.js";
-import { renderIntent, type Viewport } from "./surface-intent.js";
-import { renderPin, type PinRecord, type RenderPinOpts } from "./surface-pin.js";
-import { renderDetail } from "./surface-detail.js";
-import { renderViewAll } from "./surface-view-all.js";
-import { renderProjectChooser } from "./surface-project-chooser.js";
-import { renderFallback } from "./surface-fallback.js";
-import { renderHostAuth } from "./surface-host-auth.js";
-import { renderStatusBar, type StatusModel } from "./surface-status-bar.js";
+} from "../storage/lib-storage.js";
+import { renderReady } from "../surfaces/ready.js";
+import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "../surfaces/picker.js";
+import { renderIntent, type Viewport } from "../surfaces/intent.js";
+import { renderPin, type PinRecord, type RenderPinOpts } from "../surfaces/pin.js";
+import { renderDetail } from "../surfaces/detail.js";
+import { renderViewAll } from "../surfaces/view-all.js";
+import { renderProjectChooser } from "../surfaces/project-chooser.js";
+import { renderFallback } from "../surfaces/fallback.js";
+import { renderHostAuth } from "../surfaces/host-auth.js";
+import { renderStatusBar, type StatusModel } from "../surfaces/status-bar.js";
 import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEntry } from "./pin-model.js";
 import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
 import { readPrefs } from "./prefs.js";

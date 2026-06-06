@@ -97,7 +97,7 @@ export async function prepExtension(): Promise<string> {
   copyExtension();
 
   const contentJs = path.join(destDir, "src/content.js");
-  const hostJs = path.join(destDir, "dist/ui/host.js");
+  const hostJs = path.join(destDir, "dist/ui/core/host.js");
 
   patchClosedToOpen(contentJs);
   patchClosedToOpen(hostJs);

@@ -2,8 +2,8 @@
 // breadcrumb, keyboard hierarchy traversal, rAF-throttled frame updates,
 // open Shadow DOM penetration.
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
 
 export type HoverTarget = {
   element: Element;

@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderIntent, type IntentHandlers, type Viewport } from "./ui/surface-intent.js";
-import type { IntentKind } from "./ui/lib-storage.js";
+import { renderIntent, type IntentHandlers, type Viewport } from "./ui/surfaces/intent.js";
+import type { IntentKind } from "./ui/storage/lib-storage.js";
 
 /* ------------------------------------------------------------------ *
  * Fake DOM for intent tests. Extended from ui-2-picker pattern to add:
@@ -73,7 +73,7 @@ class FakeDoc {
   getElementById(_id: string): null { return null; }
 }
 
-function makeDom(fakeDoc: FakeDoc): import("./ui/dom.js").Dom {
+function makeDom(fakeDoc: FakeDoc): import("./ui/core/dom.js").Dom {
   const created: FakeEl[] = [];
   const el = (tag: string, props: { class?: string; text?: string; attrs?: Record<string, string>; data?: Record<string, string>; style?: Record<string, string> } = {}, children: FakeEl[] = []): FakeEl => {
     const node = fakeDoc.createElement(tag);
@@ -95,7 +95,7 @@ function makeDom(fakeDoc: FakeDoc): import("./ui/dom.js").Dom {
     created.push(node);
     return node;
   };
-  return { el: el as unknown as import("./ui/dom.js").Dom["el"], clear: () => {} };
+  return { el: el as unknown as import("./ui/core/dom.js").Dom["el"], clear: () => {} };
 }
 
 const fakeTrans = (key: string): string => key;
@@ -162,7 +162,7 @@ describe("UI-3 · surface-intent", () => {
       created.push(node);
       return node;
     };
-    const dom = { el: el2 as unknown as import("./ui/dom.js").Dom["el"], clear: () => {} };
+    const dom = { el: el2 as unknown as import("./ui/core/dom.js").Dom["el"], clear: () => {} };
 
     const h = makeHandlers(handlers);
     const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h, targetLabel) as unknown as FakeEl;
@@ -329,7 +329,7 @@ describe("UI-3 · surface-intent", () => {
         created.push(node);
         return node;
       };
-      const dom = { el: el2 as unknown as import("./ui/dom.js").Dom["el"], clear: () => {} };
+      const dom = { el: el2 as unknown as import("./ui/core/dom.js").Dom["el"], clear: () => {} };
 
       const h: IntentHandlers = {
         onSave: async () => { throw new Error("storage failed"); },

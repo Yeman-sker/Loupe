@@ -3,8 +3,8 @@
 // site" CTA; the caller owns the MV3 permission request bridge.
 // Markup/spacing ported from docs/ui-ux/prototypes/loupe-surfaces.jsx (HostAuth).
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
 
 export type HostAuthOpts = {
   t: Translate;

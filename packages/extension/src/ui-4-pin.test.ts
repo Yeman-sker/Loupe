@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderPin, type PinRecord } from "./ui/surface-pin.js";
-import { createI18n } from "./ui/i18n.js";
+import { renderPin, type PinRecord } from "./ui/surfaces/pin.js";
+import { createI18n } from "./ui/core/i18n.js";
 
 // ------------------------------------------------------------------ //
 // Minimal fake DOM — same shape as ui-3-intent.test.ts FakeEl/FakeDoc.
@@ -56,7 +56,7 @@ class FakeDoc {
   getElementById(_id: string): null { return null; }
 }
 
-function makeDom(): { dom: import("./ui/dom.js").Dom; created: FakeEl[] } {
+function makeDom(): { dom: import("./ui/core/dom.js").Dom; created: FakeEl[] } {
   const doc = new FakeDoc();
   const created: FakeEl[] = [];
   const el = (
@@ -77,7 +77,7 @@ function makeDom(): { dom: import("./ui/dom.js").Dom; created: FakeEl[] } {
     created.push(node);
     return node;
   };
-  return { dom: { el: el as unknown as import("./ui/dom.js").Dom["el"], clear: () => {} }, created };
+  return { dom: { el: el as unknown as import("./ui/core/dom.js").Dom["el"], clear: () => {} }, created };
 }
 
 function makeRect(overrides: Partial<DOMRect> = {}): DOMRect {

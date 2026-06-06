@@ -8,9 +8,9 @@
 //   - bottom dock fallback (position:fixed) when target completely off-screen
 //   - inline error if onSave rejects; daemon offline is non-fatal (app.ts side)
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
-import { type IntentKind } from "./lib-storage.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
+import { type IntentKind } from "../storage/lib-storage.js";
 
 export type IntentHandlers = {
   onSave: (comment: string, kind: IntentKind) => void | Promise<void>;

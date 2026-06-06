@@ -4,8 +4,8 @@
 // (display:none) while picking is active, and replaced by the intent panel when
 // an element is selected.
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
 
 export type ReadyHandlers = {
   onPick: () => void;

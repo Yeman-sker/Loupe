@@ -3,10 +3,10 @@
 // ring + mono number + kind-accent arc + state badges + stack chip + tooltip.
 // Emits iris focus pulse while open+located.
 
-import { type Dom } from "./dom.js";
-import { createI18n, type Translate } from "./i18n.js";
-import { type IntentKind } from "./lib-storage.js";
-import { type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "./status-tokens.js";
+import { type Dom } from "../core/dom.js";
+import { createI18n, type Translate } from "../core/i18n.js";
+import { type IntentKind } from "../storage/lib-storage.js";
+import { type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "../core/status-tokens.js";
 
 export type PinRecord = {
   id: string;

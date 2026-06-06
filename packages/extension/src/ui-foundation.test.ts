@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { createDom, prefersReducedMotion } from "./ui/dom.js";
-import { createI18n } from "./ui/i18n.js";
-import { taskToken, locatorToken, syncToken, kindToken, formatConfidencePercent } from "./ui/status-tokens.js";
-import { mount } from "./ui/app.js";
-import { SURFACE_ROOT_ID } from "./ui/host.js";
+import { createDom, prefersReducedMotion } from "./ui/core/dom.js";
+import { createI18n } from "./ui/core/i18n.js";
+import { taskToken, locatorToken, syncToken, kindToken, formatConfidencePercent } from "./ui/core/status-tokens.js";
+import { mount } from "./ui/runtime/app.js";
+import { SURFACE_ROOT_ID } from "./ui/core/host.js";
 
 /* ------------------------------------------------------------------ *
  * Minimal but real fake DOM — enough to mount the surface host, walk

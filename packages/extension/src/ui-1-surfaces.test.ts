@@ -6,8 +6,8 @@ import {
   create_annotation,
   project_scope_from_url,
   session_marks_key,
-} from "./ui/lib-storage.js";
-import type { AnnotationDraft } from "./ui/lib-storage.js";
+} from "./ui/storage/lib-storage.js";
+import type { AnnotationDraft } from "./ui/storage/lib-storage.js";
 import type { Locator, ResolveResult } from "./ui/schema.js";
 
 /* ------------------------------------------------------------------ *

@@ -5,9 +5,9 @@
 // local-only. Never shows the token value; advanced repair states may show the
 // token_path (~/.loupe/token) and `loupe init` guidance.
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
-import { type TokenClass } from "./status-tokens.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
+import { type TokenClass } from "../core/status-tokens.js";
 
 export type StatusKind = "connected" | "offline" | "token_missing" | "sync_failed" | "local_only";
 

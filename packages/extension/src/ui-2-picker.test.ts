@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { attachPicker } from "./ui/surface-picker.js";
-import type { HoverTarget, PickerHandlers } from "./ui/surface-picker.js";
+import { attachPicker } from "./ui/surfaces/picker.js";
+import type { HoverTarget, PickerHandlers } from "./ui/surfaces/picker.js";
 
 /* ------------------------------------------------------------------ *
  * Minimal fake DOM for picker tests. Supports:
@@ -141,7 +141,7 @@ function makeHandlers(overrides: Partial<PickerHandlers> = {}): PickerHandlers &
 }
 
 // Minimal Dom factory backed by FakeDoc
-function makeDom(fakeDoc: FakeDoc): import("./ui/dom.js").Dom {
+function makeDom(fakeDoc: FakeDoc): import("./ui/core/dom.js").Dom {
   const el = (tag: string, props: { class?: string; text?: string; attrs?: Record<string, string> } = {}, children: FakeEl[] = []): FakeEl => {
     const node = fakeDoc.createElement(tag);
     if (props.class !== undefined) node.className = props.class;
@@ -152,7 +152,7 @@ function makeDom(fakeDoc: FakeDoc): import("./ui/dom.js").Dom {
     for (const child of children) node.appendChild(child);
     return node;
   };
-  return { el: el as unknown as import("./ui/dom.js").Dom["el"], clear: noop };
+  return { el: el as unknown as import("./ui/core/dom.js").Dom["el"], clear: noop };
 }
 
 const fakeTrans = (key: string): string => key;

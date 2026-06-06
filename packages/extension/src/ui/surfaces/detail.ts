@@ -2,10 +2,10 @@
 // comment, meta tokens, and three actions: Mark done, Copy Markdown, Delete.
 // All feedback is in-place; no toast or dialog.
 
-import { type Dom } from "./dom.js";
-import { type Translate } from "./i18n.js";
-import { type PinRecord } from "./surface-pin.js";
-import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "./status-tokens.js";
+import { type Dom } from "../core/dom.js";
+import { type Translate } from "../core/i18n.js";
+import { type PinRecord } from "./pin.js";
+import { kindToken, type TokenSpec, uiLocatorToken, uiSyncToken, uiTaskToken } from "../core/status-tokens.js";
 
 export type DetailOpts = {
   t: Translate;
