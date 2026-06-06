@@ -24,7 +24,6 @@ export type PinRecord = {
 
 export type RenderPinOpts = {
   onOpen?: (pin: PinRecord) => void;
-  stackOffset?: number;
   t?: Translate;
 };
 
@@ -36,28 +35,6 @@ const KIND_COLORS: Record<IntentKind, string> = {
   question: "var(--k-question)",
   other: "var(--k-other)",
 };
-
-function pinCorner(
-  rect: DOMRect,
-  scrollY: number,
-  vw: number,
-  vh: number,
-): { x: number; y: number } {
-  const PIN = 12;
-  const PAD = 4;
-  const candidates = [
-    { x: rect.right, y: rect.top + scrollY },
-    { x: rect.left, y: rect.top + scrollY },
-    { x: rect.right, y: rect.bottom + scrollY },
-    { x: rect.left, y: rect.bottom + scrollY },
-  ];
-  for (const c of candidates) {
-    const inX = c.x - PIN >= PAD && c.x + PIN <= vw - PAD;
-    const inY = c.y - PIN >= PAD && c.y + PIN <= scrollY + vh - PAD;
-    if (inX && inY) return c;
-  }
-  return { x: Math.max(PIN + PAD, rect.right), y: Math.max(PIN + PAD, rect.top + scrollY) };
-}
 
 const defaultT = createI18n("en").t;
 
@@ -80,21 +57,15 @@ function syncTok(dom: Dom, t: Translate, pin: PinRecord): HTMLElement {
   return makeTok(dom, uiSyncToken(t, pin.sync));
 }
 
+// Builds the pin's content + state presentation only. Positioning is owned by
+// the pin layer (a fixed anchor whose transform tracks the live element rect),
+// so this never reads scroll / viewport and never sets left/top.
 export function renderPin(
   dom: Dom,
   pin: PinRecord,
-  scrollY: number,
-  vw: number,
-  vh: number,
   opts: RenderPinOpts = {},
-): HTMLElement | null {
+): HTMLElement {
   const t = opts.t ?? defaultT;
-  const pos = pinCorner(pin.rect, scrollY, vw, vh);
-  const offsetY = opts.stackOffset ?? 0;
-  const y = pos.y + offsetY;
-
-  // Viewport culling — skip pins well outside the visible area
-  if (pos.x < -32 || pos.x > vw + 32 || y < scrollY - 32 || y > scrollY + vh + 32) return null;
 
   const task = pin.task ?? "open";
   const loc = pin.loc ?? "located";
@@ -164,7 +135,6 @@ export function renderPin(
     class: cls.join(" "),
     attrs: { role: "button", tabindex: "0", "aria-label": `Pin ${pin.num}` },
     data: { kind: pin.kind },
-    style: { left: `${pos.x}px`, top: `${y}px` },
   }, children);
 
   if (opts.onOpen !== undefined) {

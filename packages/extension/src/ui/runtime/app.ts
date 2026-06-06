@@ -23,7 +23,8 @@ import {
 import { renderReady } from "../surfaces/ready.js";
 import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "../surfaces/picker.js";
 import { renderIntent, type Viewport } from "../surfaces/intent.js";
-import { renderPin, type PinRecord, type RenderPinOpts } from "../surfaces/pin.js";
+import { renderPin, type PinRecord } from "../surfaces/pin.js";
+import { createPinLayer } from "./pin-layer.js";
 import { renderDetail } from "../surfaces/detail.js";
 import { renderViewAll } from "../surfaces/view-all.js";
 import { renderProjectChooser } from "../surfaces/project-chooser.js";
@@ -286,6 +287,12 @@ const SURFACES_CSS = `
 .va-empty .et{font-size:13.5px;font-weight:600}
 .va-empty .es{margin:6px 0 16px;font-size:12px;color:var(--ink-2)}
 
+/* Pin layer — persistent viewport-fixed container; each pin sits in an anchor
+   whose transform tracks the live element rect (set per-frame from JS). The
+   inner .lp-pin keeps its own -50%,-50% centering + animations, so position
+   (anchor) and presentation (pin) never fight. */
+.lp-pin-layer{position:absolute;inset:0;pointer-events:none}
+.lp-pin-anchor{position:absolute;top:0;left:0;pointer-events:none;will-change:transform}
 /* Pin */
 .lp-pin{position:absolute;width:24px;height:24px;
   transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
@@ -464,8 +471,26 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachFallback: (() => void) | null = null;
   let detachHostAuth: (() => void) | null = null;
   let detachStatusBar: (() => void) | null = null;
-  const pinDetachers: Array<() => void> = [];
   let prevIntentFocus: Element | null = null;
+
+  // Persistent, viewport-fixed pin layer. Pins live here across renders (keyed
+  // by id) and track their live DOM element via a rAF loop, so they follow
+  // scroll / drag / reflow smoothly and never rebuild on unrelated state change.
+  const pinLayer = createPinLayer({
+    dom: host.dom,
+    win: opts.document.defaultView ?? (globalThis as unknown as Window),
+    mount: host.mount,
+    renderContent: (pin) => renderPin(host.dom, pin, {
+      t: i18n.t,
+      onOpen: (p) => { state.openDetail = p.id; render(); },
+    }),
+    onLost: (id) => {
+      const pin = state.pins.find((p) => p.id === id);
+      if (pin === undefined || pin.loc === "lost") return;
+      pin.loc = "lost";
+      render();
+    },
+  });
 
   function clearSurfaces(): void {
     if (currentPicker !== null) {
@@ -508,8 +533,6 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachStatusBar();
       detachStatusBar = null;
     }
-    for (const d of pinDetachers) d();
-    pinDetachers.length = 0;
   }
 
   function render(): void {
@@ -672,25 +695,9 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       detachStatusBar = host.mount(statusEl);
     }
 
-    // Pins — group by element to compute stacking offsets
-    {
-      const view = opts.document.defaultView;
-      const scrollY = view?.scrollY ?? 0;
-      const vw = view?.innerWidth ?? 1024;
-      const vh = view?.innerHeight ?? 768;
-      const elementCount = new Map<Element, number>();
-      for (const pin of state.pins) {
-        const idx = elementCount.get(pin.element) ?? 0;
-        elementCount.set(pin.element, idx + 1);
-        const renderOpts: RenderPinOpts = {
-          stackOffset: idx * 16,
-          t,
-          onOpen: (p) => { state.openDetail = p.id; render(); },
-        };
-        const pinEl = renderPin(host.dom, pin, scrollY, vw, vh, renderOpts);
-        if (pinEl !== null) pinDetachers.push(host.mount(pinEl));
-      }
-    }
+    // Pins — owned by the persistent pin layer (keyed by id, live-tracked).
+    // Kept outside clearSurfaces so unrelated re-renders never rebuild them.
+    pinLayer.sync(state.pins);
   }
 
   async function requestHostAuthorization(doc: Document): Promise<void> {
@@ -1152,6 +1159,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       opts.document.removeEventListener("keydown", onGlobalKey);
       win?.removeEventListener("resize", render);
       clearSurfaces();
+      pinLayer.unmount();
       host.destroy();
     },
     toggleStatusBar,

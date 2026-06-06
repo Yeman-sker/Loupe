@@ -105,7 +105,7 @@ describe("UI-4 · surface-pin", () => {
   describe("open + located state", () => {
     it("has lp-pin--open class and no badge", () => {
       const { dom, created } = makeDom();
-      const el = renderPin(dom, makePin({ task: "open", loc: "located" }), 0, 1024, 768) as unknown as FakeEl;
+      const el = renderPin(dom, makePin({ task: "open", loc: "located" })) as unknown as FakeEl;
       assert.ok(el !== null, "should render");
       assert.ok(el.classList.contains("lp-pin--open"), "should have open class");
       const badge = created.find((e) => e.classList.contains("lp-pin-badge"));
@@ -114,7 +114,7 @@ describe("UI-4 · surface-pin", () => {
 
     it("renders iris pulse element", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin({ task: "open", loc: "located" }), 0, 1024, 768);
+      renderPin(dom, makePin({ task: "open", loc: "located" }));
       const pulse = created.find((e) => e.classList.contains("lp-pin-pulse"));
       assert.ok(pulse !== undefined, "pulse element should exist for open+located");
     });
@@ -123,7 +123,7 @@ describe("UI-4 · surface-pin", () => {
   describe("done state", () => {
     it("has lp-pin--done class and ✓ badge", () => {
       const { dom, created } = makeDom();
-      const el = renderPin(dom, makePin({ task: "done" }), 0, 1024, 768) as unknown as FakeEl;
+      const el = renderPin(dom, makePin({ task: "done" })) as unknown as FakeEl;
       assert.ok(el !== null);
       assert.ok(el.classList.contains("lp-pin--done"), "should have done class");
       assert.ok(!el.classList.contains("lp-pin--open"), "should not have open class");
@@ -134,7 +134,7 @@ describe("UI-4 · surface-pin", () => {
 
     it("does not render pulse for done pin", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin({ task: "done" }), 0, 1024, 768);
+      renderPin(dom, makePin({ task: "done" }));
       const pulse = created.find((e) => e.classList.contains("lp-pin-pulse"));
       assert.ok(pulse === undefined, "no pulse for done pin");
     });
@@ -143,7 +143,7 @@ describe("UI-4 · surface-pin", () => {
   describe("drifted state", () => {
     it("has lp-pin--drift class and △ badge", () => {
       const { dom, created } = makeDom();
-      const el = renderPin(dom, makePin({ task: "open", loc: "drifted", confidence: 62 }), 0, 1024, 768) as unknown as FakeEl;
+      const el = renderPin(dom, makePin({ task: "open", loc: "drifted", confidence: 62 })) as unknown as FakeEl;
       assert.ok(el !== null);
       assert.ok(el.classList.contains("lp-pin--drift"), "should have drift class");
       const badge = created.find((e) => e.classList.contains("lp-pin-badge")) as unknown as FakeEl;
@@ -155,7 +155,7 @@ describe("UI-4 · surface-pin", () => {
   describe("lost state", () => {
     it("has lp-pin--lost class and ✕ badge", () => {
       const { dom, created } = makeDom();
-      const el = renderPin(dom, makePin({ task: "open", loc: "lost" }), 0, 1024, 768) as unknown as FakeEl;
+      const el = renderPin(dom, makePin({ task: "open", loc: "lost" })) as unknown as FakeEl;
       assert.ok(el !== null);
       assert.ok(el.classList.contains("lp-pin--lost"), "should have lost class");
       const badge = created.find((e) => e.classList.contains("lp-pin-badge")) as unknown as FakeEl;
@@ -167,7 +167,7 @@ describe("UI-4 · surface-pin", () => {
   describe("stack chip", () => {
     it("renders +N chip when stack > 0", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin({ stack: 3 }), 0, 1024, 768);
+      renderPin(dom, makePin({ stack: 3 }));
       const chip = created.find((e) => e.classList.contains("lp-pin-stackn")) as unknown as FakeEl;
       assert.ok(chip !== undefined, "stack chip should exist");
       assert.equal(chip.textContent, "+3");
@@ -175,7 +175,7 @@ describe("UI-4 · surface-pin", () => {
 
     it("does not render chip when stack is absent", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin(), 0, 1024, 768);
+      renderPin(dom, makePin());
       const chip = created.find((e) => e.classList.contains("lp-pin-stackn"));
       assert.ok(chip === undefined, "no chip when stack absent");
     });
@@ -185,7 +185,7 @@ describe("UI-4 · surface-pin", () => {
     it("uses the active i18n labels in hover tooltip", () => {
       const { dom, created } = makeDom();
       const { t } = createI18n("zh");
-      renderPin(dom, makePin({ task: "open", loc: "located", confidence: 0.9333333333333332, sync: "local" }), 0, 1024, 768, { t });
+      renderPin(dom, makePin({ task: "open", loc: "located", confidence: 0.9333333333333332, sync: "local" }), { t });
       const allText = created.map((e) => e.textContent ?? "").join(" ");
 
       assert.ok(allText.includes("待办"), "task token should be localized");
@@ -197,7 +197,7 @@ describe("UI-4 · surface-pin", () => {
 
     it("located shows confidence %", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin({ loc: "located", confidence: 100 }), 0, 1024, 768);
+      renderPin(dom, makePin({ loc: "located", confidence: 100 }));
       const tip = created.find((e) => e.classList.contains("lp-pin-tip")) as unknown as FakeEl;
       assert.ok(tip !== undefined, "tooltip should exist");
       // The loc tok child should have text including "100%"
@@ -211,7 +211,7 @@ describe("UI-4 · surface-pin", () => {
 
     it("lost does not show confidence %", () => {
       const { dom, created } = makeDom();
-      renderPin(dom, makePin({ loc: "lost" }), 0, 1024, 768);
+      renderPin(dom, makePin({ loc: "lost" }));
       const tip = created.find((e) => e.classList.contains("lp-pin-tip")) as unknown as FakeEl;
       assert.ok(tip !== undefined);
       const allText = created.map((e) => e.textContent ?? "").join(" ");
@@ -224,7 +224,7 @@ describe("UI-4 · surface-pin", () => {
       const { dom } = makeDom();
       let called: PinRecord | null = null;
       const pin = makePin();
-      const el = renderPin(dom, pin, 0, 1024, 768, { onOpen: (p) => { called = p; } }) as unknown as FakeEl;
+      const el = renderPin(dom, pin, { onOpen: (p) => { called = p; } }) as unknown as FakeEl;
       assert.ok(el !== null);
       el.dispatch("click", { stopPropagation: () => {} });
       assert.ok(called !== null, "onOpen should be called on click");
@@ -234,7 +234,7 @@ describe("UI-4 · surface-pin", () => {
     it("Enter keydown fires onOpen", () => {
       const { dom } = makeDom();
       let called = false;
-      const el = renderPin(dom, makePin(), 0, 1024, 768, { onOpen: () => { called = true; } }) as unknown as FakeEl;
+      const el = renderPin(dom, makePin(), { onOpen: () => { called = true; } }) as unknown as FakeEl;
       assert.ok(el !== null);
       el.dispatch("keydown", { key: "Enter", preventDefault: () => {} });
       assert.ok(called, "onOpen should be called on Enter");
@@ -243,38 +243,10 @@ describe("UI-4 · surface-pin", () => {
     it("Space keydown fires onOpen", () => {
       const { dom } = makeDom();
       let called = false;
-      const el = renderPin(dom, makePin(), 0, 1024, 768, { onOpen: () => { called = true; } }) as unknown as FakeEl;
+      const el = renderPin(dom, makePin(), { onOpen: () => { called = true; } }) as unknown as FakeEl;
       assert.ok(el !== null);
       el.dispatch("keydown", { key: " ", preventDefault: () => {} });
       assert.ok(called, "onOpen should be called on Space");
-    });
-  });
-
-  describe("viewport culling", () => {
-    it("returns null for pin far outside viewport", () => {
-      const { dom } = makeDom();
-      // Pin rect is entirely off-screen to the right
-      const rect = makeRect({ left: 2000, right: 2200, top: 100, bottom: 140 });
-      const result = renderPin(dom, makePin({ rect }), 0, 1024, 768);
-      assert.equal(result, null, "should return null for out-of-viewport pin");
-    });
-
-    it("returns element for pin inside viewport", () => {
-      const { dom } = makeDom();
-      const result = renderPin(dom, makePin(), 0, 1024, 768);
-      assert.ok(result !== null, "should render pin inside viewport");
-    });
-  });
-
-  describe("stack offset", () => {
-    it("applies stackOffset to pin y position", () => {
-      const { dom } = makeDom();
-      const el1 = renderPin(dom, makePin(), 0, 1024, 768, { stackOffset: 0 }) as unknown as FakeEl;
-      const el2 = renderPin(dom, makePin(), 0, 1024, 768, { stackOffset: 16 }) as unknown as FakeEl;
-      assert.ok(el1 !== null && el2 !== null);
-      const top1 = (el1.style as unknown as Record<string, string>)["top"] ?? "";
-      const top2 = (el2.style as unknown as Record<string, string>)["top"] ?? "";
-      assert.ok(top1 !== top2, "stacked pins should have different top positions");
     });
   });
 });

@@ -28,3 +28,7 @@ _Avoid_: Full composer form, annotation form
 **Kind theme**:
 The visual treatment associated with an intent kind. It helps users distinguish mark categories in in-page surfaces, but it must not be the only carrier of status or meaning.
 _Avoid_: Category color only
+
+**Pin**:
+The in-page visual marker for a saved mark. A pin is anchored to its live DOM element and tracks that element's current viewport position; it is not a static marker placed at save-time coordinates. When the element can no longer be located, the pin freezes and reflects drifted/lost rather than following a wrong target.
+_Avoid_: Marker, dot, badge
