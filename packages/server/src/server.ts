@@ -2,6 +2,7 @@ import { createServer as createNodeServer, type IncomingMessage, type Server, ty
 import { resolve } from "node:path";
 import {
   assert_annotation,
+  assert_anomaly_report_input,
   error_codes,
   LOUPE_DAEMON_NAME,
   LOUPE_DEFAULT_PORT,
@@ -15,6 +16,7 @@ import {
   type StorageEnvelope,
 } from "@loupe-server/shared";
 
+import { getAnomaly, listAnomalies, writeAnomaly } from "./anomaly-store.js";
 import { appendDaemonLog } from "./daemon-log.js";
 import {
   homeHashForHome,
@@ -160,6 +162,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
 
+  if (url.pathname === "/v1/anomalies" || url.pathname.startsWith("/v1/anomalies/")) {
+    await handleAnomalies(request, response, url, context.home, context.console);
+    return;
+  }
+
   if (url.pathname === "/mcp") {
     if (request.method !== "POST") {
       await appendDaemonLog(context.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
@@ -175,7 +182,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 }
 
 function isProtectedPath(pathname: string): boolean {
-  return pathname === "/mcp" || pathname === "/v1/marks" || pathname.startsWith("/v1/marks/");
+  return pathname === "/mcp" || pathname === "/v1/marks" || pathname.startsWith("/v1/marks/") || pathname === "/v1/anomalies" || pathname.startsWith("/v1/anomalies/");
 }
 
 function isAuthorized(request: IncomingMessage, token: string): boolean {
@@ -257,6 +264,8 @@ function mcpTools(): unknown[] {
     { name: "get_mark", description: "Get one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
     { name: "resolve_mark", description: "Resolve one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, resolution_note: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
     { name: "delete_mark", description: "Delete one Loupe mark by id with a project assertion.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" }, ...scopeProperties }, required: ["id"], additionalProperties: true } },
+    { name: "list_anomalies", description: "List captured Loupe anomalies, newest first; optional project_id filter.", inputSchema: { type: "object", properties: { project_id: { type: "string" } }, additionalProperties: true } },
+    { name: "get_anomaly", description: "Get one captured Loupe anomaly by id, including its offline replay recipe.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: true } },
   ];
 }
 
@@ -286,6 +295,18 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
       return { result: result.value };
     }
     return { error: result.error };
+  }
+  if (name === "list_anomalies") {
+    const projectId = stringArg(args, "project_id");
+    const anomalies = await listAnomalies(store.home);
+    return { result: { anomalies: projectId === undefined ? anomalies : anomalies.filter((anomaly) => anomaly.project_id === projectId) } };
+  }
+  if (name === "get_anomaly") {
+    const id = stringArg(args, "id");
+    if (id === undefined) return { error: { code: error_codes.invalid_request, message: "Anomaly id is required." } };
+    const report = await getAnomaly(store.home, id);
+    if (report === undefined) return { error: { code: error_codes.not_found, message: "Anomaly not found." } };
+    return { result: report };
   }
   return { error: { code: error_codes.not_found, message: "Tool not found." } };
 }
@@ -364,6 +385,50 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
 
   await appendDaemonLog(store.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console });
   writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Unsupported marks operation." } });
+}
+
+async function handleAnomalies(request: IncomingMessage, response: ServerResponse, url: URL, home: string, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
+  if (url.pathname === "/v1/anomalies") {
+    if (request.method === "POST") {
+      let body: unknown;
+      try {
+        body = JSON.parse(await readRequestBody(request)) as unknown;
+        assert_anomaly_report_input(body);
+      } catch {
+        await appendDaemonLog(home, "ERROR", "anomaly invalid report", { console });
+        writeJson(response, 400, { error: { code: error_codes.invalid_request, message: "Expected AnomalyReportInput wire contract." } });
+        return;
+      }
+      const report = await writeAnomaly(home, body);
+      await appendDaemonLog(home, "INFO", "anomaly captured", { fields: { anomaly: report.id, source: report.source } });
+      writeJson(response, 200, { anomaly: report });
+      return;
+    }
+    if (request.method === "GET") {
+      writeJson(response, 200, { anomalies: await listAnomalies(home) });
+      return;
+    }
+  }
+
+  const id = anomalyPathId(url.pathname);
+  if (id !== undefined && request.method === "GET") {
+    const report = await getAnomaly(home, id);
+    if (report === undefined) {
+      writeJson(response, 404, { error: { code: error_codes.not_found, message: "Anomaly not found." } });
+      return;
+    }
+    writeJson(response, 200, { anomaly: report });
+    return;
+  }
+
+  await appendDaemonLog(home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console });
+  writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Unsupported anomalies operation." } });
+}
+
+function anomalyPathId(pathname: string): string | undefined {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 3 && parts[0] === "v1" && parts[1] === "anomalies") return decodeURIComponent(parts[2] ?? "");
+  return undefined;
 }
 
 function markPath(pathname: string): { id: string; action?: "resolve" } | undefined {

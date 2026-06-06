@@ -70,8 +70,8 @@ importers:
   packages/server:
     dependencies:
       '@loupe-server/shared':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^22.15.29
@@ -253,9 +253,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@loupe-server/shared@0.2.0':
-    resolution: {integrity: sha512-1EJgFcd6KpsBNt1mwc2GxTxlRtSF3FW4Dbp8nJXo2SDtlcZtWSy3qaJima8eQM1z61tJzTIli9tFo1Hx6s3pfw==}
-
   '@playwright/test@1.60.0':
     resolution: {integrity: sha512-O71yZIbAh/PxDMNGns37GHBIfrVkEVyn+AXyIa5dOTfb4/xNvRWV+Vv/NMbNCtODB/pO7vLlF2OTmMVLhmr7Ag==}
     engines: {node: '>=18'}
@@ -381,8 +378,6 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.0':
     optional: true
-
-  '@loupe-server/shared@0.2.0': {}
 
   '@playwright/test@1.60.0':
     dependencies:

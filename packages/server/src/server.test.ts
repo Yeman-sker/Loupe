@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
-import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type Locator } from "@loupe-server/shared";
+import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type AnomalyReport, type AnomalyReportInput, type AnomalySummary, type Locator } from "@loupe-server/shared";
 import { ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
 import { forwardJsonRpcMessage, parseProxyArgs } from "./mcp-proxy.js";
 import { createServer, ensureToken, homeHashForHome, projectIdForWorkspaceRootHash, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, workspaceRootHashForRoot, writeServerStatus, type LoupeHttpServer } from "./server.js";
@@ -119,7 +119,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.ok(isRecord(body.result));
     assert.ok(Array.isArray(body.result.tools));
     const names = body.result.tools.map((tool) => (isRecord(tool) ? tool.name : undefined));
-    assert.deepEqual(names, ["list_marks", "get_mark", "resolve_mark", "delete_mark"]);
+    assert.deepEqual(names, ["list_marks", "get_mark", "resolve_mark", "delete_mark", "list_anomalies", "get_anomaly"]);
   });
 
   it("returns SCOPE_REQUIRED for authorized unscoped list_marks", async () => {
@@ -300,7 +300,7 @@ describe("Loupe Phase 0 HTTP contract", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: "tools", method: "tools/list" }),
     });
     assert.equal(list.status, 200);
-    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 4);
+    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 6);
   });
 
   it("rejects UUID-like bare-id MCP get, resolve, and delete", async () => {
@@ -529,6 +529,92 @@ describe("Loupe Phase 0 HTTP contract", () => {
     });
   });
  });
+
+describe("Loupe anomaly capture contract", () => {
+  const token = "anomaly-test-token";
+  let server: LoupeHttpServer;
+  let home = "";
+  let baseUrl = "";
+
+  before(async () => {
+    home = await mkdtemp(join(tmpdir(), "loupe-anomaly-"));
+    server = createServer({ home, port: 0, token, version: "anomaly-test" });
+    await listenEphemeral(server);
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  after(async () => {
+    await closeServer(server);
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("rejects an unauthenticated anomaly POST", async () => {
+    const response = await fetch(`${baseUrl}/v1/anomalies`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(sampleAnomaly()),
+    });
+    assert.equal(response.status, 401);
+  });
+
+  it("rejects an anomaly that violates the wire contract", async () => {
+    const response = await fetch(`${baseUrl}/v1/anomalies`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ schema_version: LOUPE_SCHEMA_VERSION, source: "manual" }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, error_codes.invalid_request);
+  });
+
+  it("captures a manual anomaly, splits blobs to disk, and reads it back via HTTP and MCP", async () => {
+    const input = sampleAnomaly({ summary: "resolved pin landed on the wrong button", dom_html: "<main><button>A</button><button>B</button></main>", storage: { marks: [] } });
+    const created = await fetch(`${baseUrl}/v1/anomalies`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    assert.equal(created.status, 200);
+    const report = ((await created.json()) as { anomaly: AnomalyReport }).anomaly;
+    assert.match(report.id, /[0-9a-f-]{36}/);
+    assert.equal(typeof report.created_at, "string");
+    assert.equal(report.has_dom, true);
+    assert.equal(report.has_storage, true);
+    assert.equal((report as Record<string, unknown>).dom_html, undefined);
+    assert.equal((report as Record<string, unknown>).storage, undefined);
+
+    // Blobs land as sibling files; report.json excludes them.
+    assert.equal(await readFile(join(home, "anomalies", report.id, "dom.html"), "utf8"), input.dom_html);
+    const onDisk = JSON.parse(await readFile(join(home, "anomalies", report.id, "report.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(onDisk.dom_html, undefined);
+
+    // HTTP list returns a low-noise summary without blobs.
+    const list = await fetch(`${baseUrl}/v1/anomalies`, { headers: authHeaders(token) });
+    const summaries = ((await list.json()) as { anomalies: AnomalySummary[] }).anomalies;
+    const summary = summaries.find((item) => item.id === report.id);
+    assert.ok(summary !== undefined);
+    assert.equal(summary.summary, "resolved pin landed on the wrong button");
+    assert.equal(summary.locator_status, "resolved");
+    assert.equal((summary as Record<string, unknown>).breadcrumbs, undefined);
+
+    // HTTP get returns the full report.
+    const got = await fetch(`${baseUrl}/v1/anomalies/${report.id}`, { headers: authHeaders(token) });
+    assert.equal(got.status, 200);
+    assert.deepEqual(((await got.json()) as { anomaly: AnomalyReport }).anomaly, report);
+
+    // MCP get_anomaly returns the same report; list_anomalies includes the summary.
+    const mcpGet = await callMcpTool(baseUrl, token, "get_anomaly", { id: report.id }, "anomaly-mcp-get");
+    assert.deepEqual(mcpStructuredContent(mcpGet), report);
+    const mcpList = await callMcpTool(baseUrl, token, "list_anomalies", {}, "anomaly-mcp-list");
+    const mcpSummaries = (mcpStructuredContent(mcpList) as { anomalies: AnomalySummary[] }).anomalies;
+    assert.ok(mcpSummaries.some((item) => item.id === report.id));
+  });
+
+  it("returns NOT_FOUND for an unknown anomaly id over MCP", async () => {
+    const body = await callMcpTool(baseUrl, token, "get_anomaly", { id: "missing" }, "anomaly-missing");
+    assert.equal(body.error?.data?.code, error_codes.not_found);
+  });
+});
 
 describe("Loupe Phase 0 token and server status files", () => {
   it("creates a non-empty random-shaped token and server status in a supplied home", async () => {
@@ -1165,6 +1251,18 @@ async function postMark(baseUrl: string, token: string, annotation: Annotation):
 
 async function assertOk(response: Response): Promise<void> {
   if (response.status !== 200) assert.fail(`Expected 200 response, got ${response.status}: ${await response.text()}`);
+}
+
+function sampleAnomaly(overrides: Partial<AnomalyReportInput> = {}): AnomalyReportInput {
+  return {
+    schema_version: LOUPE_SCHEMA_VERSION,
+    source: "manual",
+    summary: "sample anomaly",
+    breadcrumbs: [{ at: "2026-06-06T00:00:00.000Z", kind: "pick" }],
+    resolve_result: { locator_status: "resolved", confidence: 1, matched_by: ["primary_selector"] },
+    env: { url: "http://localhost:5173/", viewport: { width: 1280, height: 800, dpr: 2 } },
+    ...overrides,
+  };
 }
 
 function sampleAnnotation(overrides: { id: string; project_id: string; session_id: string; workspace_root_hash?: string; route_key?: string; url?: string; origin?: string; branch?: string } = { id: "annotation-1", project_id: "project-abc", session_id: "session-def" }): Annotation {
