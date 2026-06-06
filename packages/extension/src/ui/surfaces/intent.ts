@@ -17,7 +17,7 @@ export type IntentHandlers = {
   onCancel: () => void;
 };
 
-export type Viewport = { width: number; height: number; scrollY: number };
+export type Viewport = { width: number; height: number };
 
 const KINDS: IntentKind[] = ["bug", "copy", "style", "layout", "question", "other"];
 
@@ -28,7 +28,7 @@ export function renderIntent(
   viewport: Viewport,
   handlers: IntentHandlers,
   targetLabel = "",
-): HTMLElement {
+): { el: HTMLElement; place: (rect: DOMRect) => void } {
   let kind: IntentKind = "other";
   let escPendingDiscard = false;
   let escDiscardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -237,49 +237,50 @@ export function renderIntent(
   // Expose shell for test-only animationend mocking
   (el as unknown as Record<string, unknown>)._shell = intentShell;
 
-  // Position: below target if room, above if room, else bottom dock (fixed)
+  // Position: below target if room, above if room, else bottom dock (fixed).
+  // The overlay host is position:fixed, so the live viewport rect is used as-is
+  // (no scroll offset); `place` is re-run each frame by the caller's tracker so
+  // the panel follows its element through scroll / drag / reflow.
   const PANEL_HEIGHT = 210;
   const PANEL_WIDTH = 380;
   const PAD = 8;
-  const absTop = targetRect.top + viewport.scrollY;
-  const absLeft = targetRect.left;
 
-  const spaceBelow = viewport.height - targetRect.bottom;
-  const spaceAbove = targetRect.top;
+  function place(rect: DOMRect): void {
+    const spaceBelow = viewport.height - rect.bottom;
+    const spaceAbove = rect.top;
+    const bottomDock = spaceBelow < PANEL_HEIGHT + PAD && spaceAbove < PANEL_HEIGHT + PAD;
 
-  const bottomDock = spaceBelow < PANEL_HEIGHT + PAD && spaceAbove < PANEL_HEIGHT + PAD;
+    const left = Math.max(PAD, Math.min(rect.left, viewport.width - PANEL_WIDTH - PAD));
 
-  const left = Math.max(PAD, Math.min(absLeft, viewport.width - PANEL_WIDTH - PAD));
-
-  // Compute --ox: transform-origin x for collapse animation (target center relative to panel)
-  const targetCenterX = targetRect.left + targetRect.width / 2;
-  const ox = Math.max(0, Math.min(100, ((targetCenterX - left) / PANEL_WIDTH) * 100));
-  const styleDecl = el.style as CSSStyleDeclaration;
-  if (typeof styleDecl.setProperty === "function") {
-    styleDecl.setProperty("--ox", `${ox.toFixed(1)}%`);
-  }
-
-  if (bottomDock) {
-    el.style.position = "fixed";
-    el.style.bottom = `${PAD}px`;
-    el.style.left = `${left}px`;
-    el.style.width = `${PANEL_WIDTH}px`;
-  } else {
-    let top: number;
-    if (spaceBelow >= PANEL_HEIGHT + PAD) {
-      top = absTop + targetRect.height + PAD;
-    } else {
-      top = absTop - PANEL_HEIGHT - PAD;
+    // --ox: transform-origin x for collapse animation (target center vs panel)
+    const targetCenterX = rect.left + rect.width / 2;
+    const ox = Math.max(0, Math.min(100, ((targetCenterX - left) / PANEL_WIDTH) * 100));
+    const styleDecl = el.style as CSSStyleDeclaration;
+    if (typeof styleDecl.setProperty === "function") {
+      styleDecl.setProperty("--ox", `${ox.toFixed(1)}%`);
     }
-    el.style.position = "absolute";
-    el.style.top = `${top}px`;
-    el.style.left = `${left}px`;
+
     el.style.width = `${PANEL_WIDTH}px`;
+    el.style.left = `${left}px`;
+    if (bottomDock) {
+      el.style.position = "fixed";
+      el.style.top = "";
+      el.style.bottom = `${PAD}px`;
+    } else {
+      const top = spaceBelow >= PANEL_HEIGHT + PAD
+        ? rect.top + rect.height + PAD
+        : rect.top - PANEL_HEIGHT - PAD;
+      el.style.position = "absolute";
+      el.style.bottom = "";
+      el.style.top = `${top}px`;
+    }
   }
+
+  place(targetRect);
 
   setTimeout(() => {
     (textarea as HTMLTextAreaElement).focus();
   }, 0);
 
-  return el;
+  return { el, place };
 }

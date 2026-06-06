@@ -105,7 +105,7 @@ function makeRect(overrides: Partial<DOMRect> = {}): DOMRect {
 }
 
 function makeViewport(overrides: Partial<Viewport> = {}): Viewport {
-  return { width: 1024, height: 768, scrollY: 0, ...overrides };
+  return { width: 1024, height: 768, ...overrides };
 }
 
 function makeHandlers(overrides: Partial<IntentHandlers> = {}): IntentHandlers & { saveArgs: Array<[string, IntentKind]>; cancelCalled: boolean } {
@@ -165,7 +165,7 @@ describe("UI-3 · surface-intent", () => {
     const dom = { el: el2 as unknown as import("../core/dom.js").Dom["el"], clear: () => {} };
 
     const h = makeHandlers(handlers);
-    const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h, targetLabel) as unknown as FakeEl;
+    const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h, targetLabel).el as unknown as FakeEl;
 
     // Created elements in order: pip, targ, textarea, submitBtn, nameSpan×6, dot×6, kindLabel, kindrail, row, intentShell, hintEl, discardEl, errorEl, hintKey, footEl, root
     // Let's identify by tag and position:
@@ -335,7 +335,7 @@ describe("UI-3 · surface-intent", () => {
         onSave: async () => { throw new Error("storage failed"); },
         onCancel: () => {},
       };
-      const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h) as unknown as FakeEl;
+      const rootEl = renderIntent(dom, fakeTrans, makeRect(), makeViewport(), h).el as unknown as FakeEl;
       const shell = created.find((e) => e.classList.contains("lp-intent-shell")) as FakeEl;
       const errorEl = created.find((e) => e.classList.contains("lp-intent-error")) as FakeEl;
       const textareas = created.filter((e) => e.tagName === "TEXTAREA");
@@ -455,7 +455,7 @@ describe("UI-3 · surface-intent", () => {
       const rect = makeRect({ top: 10, bottom: 50 }); // very little space above or below
       const viewport = makeViewport({ height: 100 }); // tiny viewport → both spaceBelow and spaceAbove < PANEL_HEIGHT+PAD
 
-      const el = renderIntent(dom, fakeTrans, rect, viewport, h) as unknown as FakeEl;
+      const el = renderIntent(dom, fakeTrans, rect, viewport, h).el as unknown as FakeEl;
       assert.equal((el.style as unknown as Record<string, string>)["position"], "fixed", "should use fixed positioning for bottom dock");
       assert.ok((el.style as unknown as Record<string, string>)["bottom"] !== undefined, "should set bottom property");
     });

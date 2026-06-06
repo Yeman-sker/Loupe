@@ -25,6 +25,7 @@ import { attachPicker, semanticLabel, type HoverTarget, type Picker } from "../s
 import { renderIntent, type Viewport } from "../surfaces/intent.js";
 import { renderPin, type PinRecord } from "../surfaces/pin.js";
 import { createPinLayer } from "./pin-layer.js";
+import { trackAnchor } from "./anchor-track.js";
 import { renderDetail } from "../surfaces/detail.js";
 import { renderViewAll } from "../surfaces/view-all.js";
 import { renderProjectChooser } from "../surfaces/project-chooser.js";
@@ -95,6 +96,8 @@ type AppState = {
   pins: PinRecord[];
   markCount: number;
   openDetail: string | null;
+  // Pin id of the ephemeral "add another" affordance shown right after a save.
+  addAnother: string | null;
   showViewAll: boolean;
   daemonTokenMissing: boolean;
   daemonOnline: boolean;
@@ -446,6 +449,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     pins: [],
     markCount: 0,
     openDetail: null,
+    addAnother: null,
     showViewAll: false,
     daemonTokenMissing: false,
     daemonOnline: true,
@@ -473,12 +477,16 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachStatusBar: (() => void) | null = null;
   let prevIntentFocus: Element | null = null;
 
+  // Window used for rAF-based anchor tracking (pin layer + element-anchored
+  // surfaces). Same fallback the pin layer uses.
+  const trackWin = opts.document.defaultView ?? (globalThis as unknown as Window);
+
   // Persistent, viewport-fixed pin layer. Pins live here across renders (keyed
   // by id) and track their live DOM element via a rAF loop, so they follow
   // scroll / drag / reflow smoothly and never rebuild on unrelated state change.
   const pinLayer = createPinLayer({
     dom: host.dom,
-    win: opts.document.defaultView ?? (globalThis as unknown as Window),
+    win: trackWin,
     mount: host.mount,
     renderContent: (pin) => renderPin(host.dom, pin, {
       t: i18n.t,
@@ -594,7 +602,6 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       const viewport: Viewport = {
         width: view?.innerWidth ?? 1024,
         height: view?.innerHeight ?? 768,
-        scrollY: view?.scrollY ?? 0,
       };
       const intentEl = renderIntent(host.dom, t, state.intent.rect, viewport, {
         onSave: async (comment, kind) => {
@@ -608,7 +615,10 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           render();
         },
       }, semanticLabel(state.intent.element));
-      detachIntent = host.mount(intentEl);
+      const origDetach = host.mount(intentEl.el);
+      // Follow the live element through scroll / drag / reflow.
+      const stop = trackAnchor(trackWin, state.intent.element, state.intent.rect, intentEl.place);
+      detachIntent = () => { stop(); origDetach(); };
     }
 
     // Detail card — Surface 6
@@ -616,12 +626,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       const pin = state.pins.find((p) => p.id === state.openDetail);
       if (pin !== undefined) {
         const view = opts.document.defaultView;
-        const scrollY = view?.scrollY ?? 0;
-        const vw = view?.innerWidth ?? 1024;
         const PAD = 12;
         const CARD_W = 346;
-        const left = Math.max(PAD, Math.min(pin.rect.left, vw - CARD_W - PAD));
-        const top = pin.rect.bottom + scrollY + 10;
         const detailEl = renderDetail(host.dom, pin, {
           t,
           onDone: (pinId) => doResolve(pinId),
@@ -631,10 +637,23 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
           onViewAll: () => { state.showViewAll = true; render(); },
           onRetry: (pinId) => doRetry(pinId),
         });
-        detailEl.style.left = `${left}px`;
-        detailEl.style.top = `${top}px`;
-        detachDetail = host.mount(detailEl);
+        // Anchored under the live pin element; viewport-fixed overlay → no scroll
+        // offset, re-placed each frame so it follows the pin like the pin itself.
+        const place = (r: DOMRect): void => {
+          const vw = view?.innerWidth ?? 1024;
+          detailEl.style.left = `${Math.max(PAD, Math.min(r.left, vw - CARD_W - PAD))}px`;
+          detailEl.style.top = `${r.bottom + 10}px`;
+        };
+        const origDetach = host.mount(detailEl);
+        const stop = trackAnchor(trackWin, pin.element, pin.rect, place);
+        detachDetail = () => { stop(); origDetach(); };
       }
+    }
+
+    // "Add another" affordance — ephemeral, anchored to the just-saved pin
+    if (state.addAnother !== null && state.openDetail === null) {
+      const pin = state.pins.find((p) => p.id === state.addAnother);
+      if (pin !== undefined) showAddAnother(pin);
     }
 
     // View all panel — Surface 7
@@ -717,6 +736,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     state.picking = true;
     state.intent = null;
     state.openDetail = null;
+    state.addAnother = null;
     state.showViewAll = false;
     state.showProjectChooser = false;
     instrumentation?.breadcrumb?.("pick_start");
@@ -959,11 +979,14 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     annotations.set(annotation.id, annotation);
     state.pins.push(pinRecord);
     state.intent = null;
+    // Ephemeral "add another" near the new pin; rendered via render() so the
+    // async sync below can't wipe it. Auto-dismisses after 4s.
+    state.addAnother = annotation.id;
     instrumentation?.breadcrumb?.("save", annotation.context.element.selector_preview);
     render();
-
-    // Show "Add another" near the new pin
-    showAddAnother(rect);
+    setTimeout(() => {
+      if (state.addAnother === annotation.id) { state.addAnother = null; render(); }
+    }, 4000);
 
     void syncSavedAnnotation(annotation.id, project);
   }
@@ -1021,14 +1044,13 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     }
   }
 
-  function showAddAnother(pinRect: DOMRect): void {
+  // Mounts the ephemeral "add another" affordance for state.addAnother. Driven
+  // by render() (not mounted directly), so unrelated re-renders — e.g. the async
+  // daemon sync that fires right after a save — rebuild it instead of wiping it.
+  // Anchored to the live pin and re-placed each frame so it follows on scroll.
+  function showAddAnother(pin: PinRecord): void {
     const { t } = i18n;
-    const doc = opts.document;
-    const view = doc.defaultView;
-    const scrollY = view?.scrollY ?? 0;
-    const vw = view?.innerWidth ?? 1024;
-    const vh = view?.innerHeight ?? 768;
-
+    const view = opts.document.defaultView;
     const btn = host.dom.el("button", { class: "lp-add-another" }, [
       host.dom.el("span", { class: "lp-add-another-x", text: "+" }),
       host.dom.el("span", { text: t("intent.add") }),
@@ -1036,30 +1058,18 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
 
     const PAD = 8;
     const PANEL_WIDTH = 200;
-    const left = Math.max(PAD, Math.min(pinRect.left + scrollY, vw - PANEL_WIDTH - PAD));
-    const top = pinRect.top + scrollY + pinRect.height + PAD;
-
     btn.style.position = "absolute";
-    btn.style.top = `${top}px`;
-    btn.style.left = `${left}px`;
-
-    btn.addEventListener("click", () => {
-      if (detachAddAnother !== null) { detachAddAnother(); detachAddAnother = null; }
-      startPicking();
-    });
-
-    // Auto-dismiss after 4s
-    const timer = setTimeout(() => {
-      if (detachAddAnother !== null) { detachAddAnother(); detachAddAnother = null; }
-    }, 4000);
-
-    const origDetach = host.mount(btn);
-    detachAddAnother = () => {
-      clearTimeout(timer);
-      origDetach();
+    const place = (r: DOMRect): void => {
+      const vw = view?.innerWidth ?? 1024;
+      btn.style.left = `${Math.max(PAD, Math.min(r.left, vw - PANEL_WIDTH - PAD))}px`;
+      btn.style.top = `${r.top + r.height + PAD}px`;
     };
 
-    void vw; void vh;
+    btn.addEventListener("click", () => { startPicking(); });
+
+    const origDetach = host.mount(btn);
+    const stop = trackAnchor(trackWin, pin.element, pin.rect, place);
+    detachAddAnother = () => { stop(); origDetach(); };
   }
 
 
