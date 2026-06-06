@@ -6,9 +6,9 @@ import {
   create_annotation,
   project_scope_from_url,
   session_marks_key,
-} from "./ui/storage/lib-storage.js";
-import type { AnnotationDraft } from "./ui/storage/lib-storage.js";
-import type { Locator, ResolveResult } from "./ui/schema.js";
+} from "./lib-storage.js";
+import type { AnnotationDraft } from "./lib-storage.js";
+import type { Locator, ResolveResult } from "../schema.js";
 
 /* ------------------------------------------------------------------ *
  * lib-storage — unit tests for the UI-1 storage bridge functions.

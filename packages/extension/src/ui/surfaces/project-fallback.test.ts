@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderProjectChooser, type ProjectEntry } from "./ui/surfaces/project-chooser.js";
-import { renderFallback } from "./ui/surfaces/fallback.js";
-import { renderDetail } from "./ui/surfaces/detail.js";
-import { type PinRecord } from "./ui/surfaces/pin.js";
-import { createI18n } from "./ui/core/i18n.js";
+import { renderProjectChooser, type ProjectEntry } from "./project-chooser.js";
+import { renderFallback } from "./fallback.js";
+import { renderDetail } from "./detail.js";
+import { type PinRecord } from "./pin.js";
+import { createI18n } from "../core/i18n.js";
 
 // ------------------------------------------------------------------ //
 // Minimal fake DOM — same shape as ui-5-detail.test.ts FakeEl/FakeDoc.
@@ -86,7 +86,7 @@ class FakeDoc {
   getElementById(_id: string): null { return null; }
 }
 
-function makeDom(): { dom: import("./ui/core/dom.js").Dom; created: FakeEl[] } {
+function makeDom(): { dom: import("../core/dom.js").Dom; created: FakeEl[] } {
   const doc = new FakeDoc();
   const created: FakeEl[] = [];
   const el = (
@@ -108,7 +108,7 @@ function makeDom(): { dom: import("./ui/core/dom.js").Dom; created: FakeEl[] } {
     created.push(node);
     return node;
   };
-  return { dom: { el: el as unknown as import("./ui/core/dom.js").Dom["el"], clear: () => {} }, created };
+  return { dom: { el: el as unknown as import("../core/dom.js").Dom["el"], clear: () => {} }, created };
 }
 
 function findByClass(root: FakeEl, cls: string): FakeEl | undefined {
