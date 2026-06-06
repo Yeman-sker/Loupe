@@ -76,6 +76,15 @@ type JsonRpcRequest = {
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type Mutation = "read" | "resolve" | "delete";
+type ExtensionPairingPayload = {
+  base_url: string;
+  token: string;
+  token_path?: string;
+  project_id: string;
+  workspace_root_hash: string;
+  branch?: string;
+};
+
 
 type RequestContext = {
   port: number;
@@ -153,6 +162,29 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
 
+  if (url.pathname === "/v1/extension-pairing") {
+    if (request.method !== "GET") {
+      await appendDaemonLog(context.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
+      writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Extension pairing endpoint requires GET." } });
+      return;
+    }
+    if (!isExtensionPairingOrigin(request.headers.origin)) {
+      await appendDaemonLog(context.home, "WARN", `unauthorized ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
+      writeJson(response, 401, { error: { code: error_codes.unauthorized, message: "Extension pairing is only available to the Loupe browser extension." } });
+      return;
+    }
+    const workspace_root_hash = await workspaceRootHashForRoot(context.workspaceRoot);
+    const payload: ExtensionPairingPayload = {
+      base_url: loopbackBaseUrl(request, context.port),
+      token: context.token,
+      project_id: projectIdForWorkspaceRootHash(workspace_root_hash),
+      workspace_root_hash,
+    };
+    if (context.branch !== undefined) payload.branch = context.branch;
+    writeJson(response, 200, payload);
+    return;
+  }
+
   if (isProtectedPath(url.pathname) && !isAuthorized(request, context.token)) {
     await appendDaemonLog(context.home, "WARN", `unauthorized ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console: context.console });
     writeJson(response, 401, { error: { code: error_codes.unauthorized, message: "Authorization bearer token is required." } });
@@ -185,6 +217,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
 function isProtectedPath(pathname: string): boolean {
   return pathname === "/mcp" || pathname === "/v1/marks" || pathname.startsWith("/v1/marks/") || pathname === "/v1/anomalies" || pathname.startsWith("/v1/anomalies/");
+}
+
+function isExtensionPairingOrigin(origin: string | undefined): boolean {
+  return origin === undefined || origin.startsWith("chrome-extension://");
+}
+
+function loopbackBaseUrl(request: IncomingMessage, fallbackPort: number): string {
+  const host = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
+  if (typeof host === "string" && host.length > 0) return `http://${host}`;
+  return `http://127.0.0.1:${fallbackPort}`;
 }
 
 function isAuthorized(request: IncomingMessage, token: string): boolean {

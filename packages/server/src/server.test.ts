@@ -70,6 +70,32 @@ describe("Loupe Phase 0 HTTP contract", () => {
     assert.equal(body.token, undefined);
   });
 
+  it("serves explicit extension pairing without leaking it from health", async () => {
+    const health = await fetch(`${baseUrl}/health`).then((response) => response.json());
+    assert.equal(health.extension_pairing, undefined);
+
+    const response = await fetch(`${baseUrl}/v1/extension-pairing`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+
+    assert.equal(body.base_url, baseUrl);
+    assert.equal(body.token, token);
+    assert.equal(body.token_path, undefined);
+    assert.equal(body.project_id, health.project_id);
+    assert.equal(body.workspace_root_hash, health.workspace_root_hash);
+  });
+
+  it("allows extension pairing only from chrome extension origins", async () => {
+    const denied = await fetch(`${baseUrl}/v1/extension-pairing`, { headers: { origin: "http://localhost:5173" } });
+    assert.equal(denied.status, 401);
+    assert.deepEqual(await denied.json(), {
+      error: { code: error_codes.unauthorized, message: "Extension pairing is only available to the Loupe browser extension." },
+    });
+
+    const allowed = await fetch(`${baseUrl}/v1/extension-pairing`, { headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop" } });
+    assert.equal(allowed.status, 200);
+  });
+
   for (const originCase of originCases) {
     it(`rejects no-token /mcp for ${originCase.name}`, async () => {
       const headers = new Headers({ "content-type": "application/json" });

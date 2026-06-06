@@ -103,6 +103,7 @@ type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 const LOUPE_AUTH_SCHEME = "Bearer";
 const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
 const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
+const LOUPE_DAEMON_PAIRING_PATH = "/v1/extension-pairing";
 const LOUPE_DAEMON_NAME = "loupe";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
@@ -283,7 +284,7 @@ export async function handle_service_worker_wake(
 
   const scope = wake_scope(message);
   if (scope === undefined) return { ok: true, reconciled: false, retried: 0, stored: 0 };
-  const daemon = wake_daemon(message) ?? await stored_daemon(storage.local);
+  const daemon = wake_daemon(message) ?? await stored_daemon(storage.local) ?? await pair_local_daemon(storage.local, now, fetch_like);
   if (daemon === undefined) {
     const marks_key = session_marks_key(scope.project_id, scope.session_id);
     const stored = await storage.local.get(marks_key);
@@ -397,6 +398,32 @@ function wake_daemon(message: unknown): DaemonCredentials | undefined {
 async function stored_daemon(storage: ChromeLike["storage"]["local"]): Promise<DaemonCredentials | undefined> {
   const stored = await storage.get(LOUPE_DAEMON_STORAGE_KEY);
   return read_daemon_credentials(stored[LOUPE_DAEMON_STORAGE_KEY]);
+}
+
+async function pair_local_daemon(storage: ChromeLike["storage"]["local"], now: string, fetch_like: FetchLike): Promise<DaemonCredentials | undefined> {
+  let payload: unknown;
+  try {
+    const response = await fetch_like(join_daemon_url(LOUPE_DAEMON_BASE_URL, LOUPE_DAEMON_PAIRING_PATH));
+    if (!response.ok) return undefined;
+    payload = await response.json();
+  } catch {
+    return undefined;
+  }
+  if (!is_record(payload)) return undefined;
+  const base_url = typeof payload.base_url === "string" && payload.base_url.length > 0 ? payload.base_url : LOUPE_DAEMON_BASE_URL;
+  if (!is_loopback_daemon_url(base_url)) return undefined;
+  if (typeof payload.token !== "string" || payload.token.length === 0) return undefined;
+  const pairing: DaemonPairing = {
+    base_url,
+    token: payload.token,
+    paired_at: now,
+    ...(typeof payload.token_path === "string" ? { token_path: payload.token_path } : {}),
+    ...(typeof payload.project_id === "string" ? { project_id: payload.project_id } : {}),
+    ...(typeof payload.workspace_root_hash === "string" ? { workspace_root_hash: payload.workspace_root_hash } : {}),
+    ...(typeof payload.branch === "string" ? { branch: payload.branch } : {}),
+  };
+  await storage.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
+  return { base_url: pairing.base_url, token: pairing.token };
 }
 
 function read_daemon_credentials(value: unknown): DaemonCredentials | undefined {

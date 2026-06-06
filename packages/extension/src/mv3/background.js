@@ -10,6 +10,7 @@ const MESSAGE_TYPES = Object.freeze({
 const LOUPE_AUTH_SCHEME = "Bearer";
 const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
 const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
+const LOUPE_DAEMON_PAIRING_PATH = "/v1/extension-pairing";
 const LOUPE_DAEMON_NAME = "loupe";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -227,7 +228,7 @@ async function handleServiceWorkerWake(message) {
 
   const scope = wakeScope(message);
   if (!scope) return { ok: true, reconciled: false, retried: 0, stored: 0 };
-  const daemon = wakeDaemon(message) || await storedDaemon();
+  const daemon = wakeDaemon(message) || await storedDaemon() || await pairLocalDaemon(now);
   if (!daemon) {
     const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
     const stored = await chrome.storage.local.get(marksKey);
@@ -294,6 +295,31 @@ async function storedDaemon() {
   if (!isObject(daemon)) return null;
   if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return null;
   return { base_url: daemon.base_url, token: daemon.token };
+}
+
+async function pairLocalDaemon(now) {
+  let payload;
+  try {
+    const response = await fetch(joinDaemonUrl(LOUPE_DAEMON_BASE_URL, LOUPE_DAEMON_PAIRING_PATH));
+    if (!response.ok) return null;
+    payload = await response.json();
+  } catch (_e) {
+    return null;
+  }
+  if (!isObject(payload)) return null;
+  const baseUrl = typeof payload.base_url === "string" && payload.base_url.length > 0 ? payload.base_url : LOUPE_DAEMON_BASE_URL;
+  if (typeof payload.token !== "string" || payload.token.length === 0) return null;
+  const pairing = {
+    base_url: baseUrl,
+    token: payload.token,
+    paired_at: now,
+    ...(typeof payload.token_path === "string" ? { token_path: payload.token_path } : {}),
+    ...(typeof payload.project_id === "string" ? { project_id: payload.project_id } : {}),
+    ...(typeof payload.workspace_root_hash === "string" ? { workspace_root_hash: payload.workspace_root_hash } : {}),
+    ...(typeof payload.branch === "string" ? { branch: payload.branch } : {}),
+  };
+  await chrome.storage.local.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
+  return { base_url: pairing.base_url, token: pairing.token };
 }
 
 async function retryLocalMark(marksKey, mark, daemon, now) {

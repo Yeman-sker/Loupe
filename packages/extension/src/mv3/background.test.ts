@@ -262,6 +262,51 @@ describe("background daemon pairing", () => {
     assert.deepEqual(result, { ok: false, paired: false, token_missing: true, error: "Daemon token is required" });
     assert.equal(store["loupe:v1:daemon"], undefined);
   });
+
+  it("pairs from the local daemon endpoint when a wake has no stored daemon", async () => {
+    const key = "loupe:v1:project:project-auto:session:session-auto:marks";
+    const local_mark = {
+      id: "mark-auto-pair",
+      project: { project_id: "project-auto", workspace_root_hash: "workspace-root-hash", origin: "http://localhost:8081", url: "http://localhost:8081/", route_key: "/", session_id: "session-auto" },
+      target: { resolution: {} },
+      intent: { comment: "auto paired", kind: "question" },
+      lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", task_status: "open" },
+      sync: { status: "local_only", retry_count: 0 },
+    };
+    const store: Record<string, unknown> = { [key]: [local_mark] };
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake", scope: local_mark.project },
+      "2026-01-01T00:00:01.000Z",
+      async (url, init) => {
+        requests.push({ url: String(url), init });
+        if (String(url) === "http://127.0.0.1:7373/v1/extension-pairing") {
+          return Response.json({ base_url: "http://127.0.0.1:7373", token: "auto-token", project_id: "project-auto", workspace_root_hash: "workspace-root-hash" });
+        }
+        if (init?.method === "POST") return new Response("{}", { status: 200 });
+        return Response.json({ marks: [] });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/extension-pairing");
+    assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer auto-token");
+    assert.deepEqual(store["loupe:v1:daemon"], {
+      base_url: "http://127.0.0.1:7373",
+      token: "auto-token",
+      paired_at: "2026-01-01T00:00:01.000Z",
+      project_id: "project-auto",
+      workspace_root_hash: "workspace-root-hash",
+    });
+  });
 });
 
 describe("background service worker wake", () => {
