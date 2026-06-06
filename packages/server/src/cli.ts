@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { appendDaemonLog, createServer, ensureLoupeHome, ensureToken, homeHashForHome, marksPathForHome, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, summarizeMarkStore, tokenPathForHome, writeServerStatus, type LoupeHttpServer } from "./server.js";
 import { fileURLToPath } from "node:url";
 import { runMcpProxy } from "./mcp-proxy.js";
-import { assert_storage_envelope, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe-server/shared";
+import { anomalyDirForId, getAnomaly } from "./anomaly-store.js";
+import { assert_storage_envelope, generate_repro_test, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, type HealthPayload, type ServerStatusFile, type StorageEnvelope } from "@loupe-server/shared";
 
-export type CliCommand = "serve" | "ensure" | "init" | "status" | "logs" | "mcp-proxy";
+export type CliCommand = "serve" | "ensure" | "init" | "status" | "logs" | "mcp-proxy" | "anomalies";
 
 export type CliOptions = {
   command: CliCommand;
   port: number;
   home?: string;
   allLogs?: boolean;
+  anomaliesAction?: "repro";
+  anomalyId?: string;
+  out?: string;
 };
 
 export type RunCliOptions = {
@@ -54,6 +58,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
     }
     if (parsed.command === "init") return await init(parsed, stdout);
     if (parsed.command === "status") return await status(parsed, stdout);
+    if (parsed.command === "anomalies") return await anomalies(parsed, stdout, stderr);
     return await logs(parsed, stdout, stderr);
   } catch (error) {
     writeLine(stderr, error instanceof Error ? error.message : String(error));
@@ -105,8 +110,10 @@ export async function ensure(options: { port?: number; home?: string }, stdout: 
 export function parseCli(argv: string[]): CliOptions {
   const command = argv[0];
   if (!isCliCommand(command)) {
-    throw new Error("Expected command: serve, ensure, init, status, logs, or mcp-proxy.");
+    throw new Error("Expected command: serve, ensure, init, status, logs, mcp-proxy, or anomalies.");
   }
+
+  if (command === "anomalies") return parseAnomaliesCli(argv);
 
   let port: number | undefined;
   let home: string | undefined;
@@ -136,6 +143,40 @@ export function parseCli(argv: string[]): CliOptions {
   }
 
   return { command, port: port ?? LOUPE_DEFAULT_PORT, ...(home === undefined ? {} : { home }), ...(allLogs ? { allLogs } : {}) };
+}
+
+function parseAnomaliesCli(argv: string[]): CliOptions {
+  const action = argv[1];
+  if (action !== "repro") throw new Error("Expected: loupe anomalies repro <id> [--out <path>] [--home <path>].");
+
+  let anomalyId: string | undefined;
+  let home: string | undefined;
+  let out: string | undefined;
+  for (let index = 2; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--out") {
+      const value = argv[index + 1];
+      if (value === undefined || value.length === 0) throw new Error("--out requires a value.");
+      out = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--home") {
+      const value = argv[index + 1];
+      if (value === undefined || value.length === 0) throw new Error("--home requires a value.");
+      home = value;
+      index += 1;
+      continue;
+    }
+    if (arg !== undefined && !arg.startsWith("--") && anomalyId === undefined) {
+      anomalyId = arg;
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg ?? ""}`);
+  }
+
+  if (anomalyId === undefined) throw new Error("loupe anomalies repro requires an anomaly <id>.");
+  return { command: "anomalies", port: LOUPE_DEFAULT_PORT, anomaliesAction: "repro", anomalyId, ...(home === undefined ? {} : { home }), ...(out === undefined ? {} : { out }) };
 }
 
 export async function init(options: { port?: number; home?: string }, stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): Promise<StatusCode> {
@@ -272,6 +313,56 @@ export async function logs(options: { home?: string; allLogs?: boolean }, stdout
   return diagnostics.length > 0 ? 2 : 0;
 }
 
+export async function anomalies(
+  options: { anomaliesAction?: "repro"; anomalyId?: string; out?: string; home?: string },
+  stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout,
+  stderr: Pick<NodeJS.WriteStream, "write"> = process.stderr,
+): Promise<StatusCode> {
+  if (options.anomaliesAction !== "repro" || options.anomalyId === undefined) {
+    writeLine(stderr, "Usage: loupe anomalies repro <id> [--out <path>] [--home <path>].");
+    return 1;
+  }
+
+  const home = resolveLoupeHome(options.home);
+  const id = options.anomalyId;
+  const report = await getAnomaly(home, id);
+  if (report === undefined) {
+    writeLine(stderr, `No anomaly bundle found for id ${id} under ${home}.`);
+    writeLine(stderr, "Repair: run loupe status, confirm the id with list_anomalies, or capture a new anomaly.");
+    return 1;
+  }
+
+  if (!report.has_dom) {
+    writeLine(stderr, `Anomaly ${id} has no captured DOM snapshot; an offline replay test cannot be generated.`);
+    return 1;
+  }
+
+  let domHtml: string;
+  try {
+    domHtml = await readFile(join(anomalyDirForId(home, id), "dom.html"), "utf8");
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) {
+      writeLine(stderr, `Anomaly ${id} is missing its dom.html on disk; the bundle is incomplete.`);
+      return 1;
+    }
+    throw error;
+  }
+
+  let source: string;
+  try {
+    source = generate_repro_test({ report, dom_html: domHtml });
+  } catch (error) {
+    writeLine(stderr, error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
+  const outPath = options.out ?? join(process.cwd(), `${id}.repro.test.ts`);
+  await writeFile(outPath, source, "utf8");
+  writeLine(stdout, `Wrote offline replay test to ${outPath}.`);
+  writeLine(stdout, "Place it beside packages/shared/src/schema.ts (sibling imports), then run it with the shared test runner.");
+  return 0;
+}
+
 type HealthWarning = { code: string; message: string; file?: string };
 type LoupeHealthPayload = HealthPayload & { warnings?: HealthWarning[] };
 
@@ -334,7 +425,7 @@ function isHealthWarnings(value: unknown): value is HealthWarning[] | undefined 
 
 
 function isCliCommand(command: string | undefined): command is CliCommand {
-  return command === "serve" || command === "ensure" || command === "init" || command === "status" || command === "logs" || command === "mcp-proxy";
+  return command === "serve" || command === "ensure" || command === "init" || command === "status" || command === "logs" || command === "mcp-proxy" || command === "anomalies";
 }
 
 type TokenStatus =
@@ -508,6 +599,7 @@ function writeUsage(stream: Pick<NodeJS.WriteStream, "write">): void {
   writeLine(stream, "       loupe status [--port <n>] [--home <path>]");
   writeLine(stream, "       loupe logs [--all] [--home <path>]");
   writeLine(stream, "       loupe mcp-proxy [--url <url>] [--token-path <path>]");
+  writeLine(stream, "       loupe anomalies repro <id> [--out <path>] [--home <path>]");
 }
 
 function writeLine(stream: Pick<NodeJS.WriteStream, "write">, line: string): void {

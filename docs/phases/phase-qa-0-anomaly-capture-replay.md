@@ -1,7 +1,8 @@
 # 阶段 QA-0 · 异常采集与离线可重放管线（MVP 骨架）
 
 > **关联 ADP：** `adp-20260606-anomaly-capture-offline-replay-pipeline.md`（管线）、
-> `adp-20260606-anomaly-capture-dev-build-only.md`（dev/prod 隔离）。
+> `adp-20260606-anomaly-capture-dev-build-only.md`（dev/prod 隔离）、
+> `adp-20260606-anomaly-repro-fidelity-replay-guard.md`（repro 改为保真守卫(绿)）。
 > 真实测试阶段的支撑能力：在使用扩展时捕获"不合理的异常"，落成 Agent 可
 > 确定性重放的离线 fixture。本阶段只做端到端**闭环骨架**，复用 daemon /
 > auth / 存储 / MCP，不追求 polish。
@@ -25,10 +26,12 @@
 - **daemon 持久化每条异常 bundle。** atomic 写入
   `~/.loupe/anomalies/<id>/{report.json, dom.html, storage.json}`；损坏 / 超大
   有界处理，与 marks.json 一致的写入安全姿态。
-- **CLI 可浏览异常。** `loupe anomalies list` / `loupe anomalies show <id>`。
-- **`repro` 生成失败测试。** 由 bundle 生成一条 `*.repro.test.ts`，喂
-  `dom.html` + `Locator` 给 `resolve()`，断言期望定位结果，wire 进
-  `locator-robustness` 离线套件且**当场失败**。
+- **Agent 可浏览异常。** 经 MCP `list_anomalies` / `get_anomaly`，以及
+  `/loupe:anomalies` 命令；CLI `list` / `show` 暂未实现（按需再加）。
+- **`repro` 生成保真回放守卫。** `loupe anomalies repro <id>` 由 bundle 生成一条
+  自包含 `*.repro.test.ts`，离线把 `dom.html` + `Locator` 喂给 `resolve()`，断言
+  复现捕获时的 `resolve_result`（status，resolved 时含 `data-loupe-target` 命中）；
+  与 `locator-robustness` 同构、默认**绿**。见 `adp-...-fidelity-replay-guard.md`。
 - **Agent 经 MCP 读取。** `list_anomalies` / `get_anomaly` 返回复现配方
   （测试路径、fixture 路径、expected vs actual、stack、面包屑），沿用与
   `list_marks` 相同的 project scope 与 token 约束。
@@ -39,9 +42,11 @@
   手动按热键标记一次，均生成 `~/.loupe/anomalies/<id>/` bundle。
 - 无 token 访问 `POST /v1/anomalies` 返回 401；有 token 写入成功；DOM 快照与
   存储切片仅落本地。
-- 对一条手动标记的"resolved 却指错"样本：`repro` 生成的测试在当前代码下
-  **失败**；当定位被修正后该测试**转绿**（闭环可验证）。
-- `loupe anomalies list/show` 能列出并展示上述 bundle 的关键字段。
+- 对一条捕获的 bundle：`loupe anomalies repro <id>` 生成的 `*.repro.test.ts` 当前
+  **通过**——离线 `resolve()` 复现捕获时的 `resolve_result`（确定性重放守卫）；
+  agent 修复时在此 harness 上编码修正后的期望。
+- `list_anomalies` 能列出 bundle 的关键字段（id/source/summary/locator_status/
+  has_dom/created_at）。
 - `get_anomaly` 经 MCP 返回复现配方，scope / token 约束与 `get_mark` 一致；
   缺 project scope 的访问按既有规则被拒。
 - Shadow DOM / same-origin iframe 子树快照重放时，离线 `resolve()` 结果与采集

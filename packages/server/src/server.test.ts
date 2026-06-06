@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { error_codes, is_agent_mark, LOUPE_DAEMON_NAME, LOUPE_DEFAULT_PORT, LOUPE_SCHEMA_VERSION, LOUPE_TOKEN_MIN_BYTES, type AgentMark, type Annotation, type AnomalyReport, type AnomalyReportInput, type AnomalySummary, type Locator } from "@loupe-server/shared";
-import { ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
+import { anomalies, ensure, init, logs, parseCli, runCli, serve, status } from "./cli.js";
+import { writeAnomaly } from "./anomaly-store.js";
 import { forwardJsonRpcMessage, parseProxyArgs } from "./mcp-proxy.js";
 import { createServer, ensureToken, homeHashForHome, projectIdForWorkspaceRootHash, resolveLoupeHome, serverLogPathForHome, serverStatusPathForHome, tokenPathForHome, workspaceRootHashForRoot, writeServerStatus, type LoupeHttpServer } from "./server.js";
 
@@ -613,6 +614,55 @@ describe("Loupe anomaly capture contract", () => {
   it("returns NOT_FOUND for an unknown anomaly id over MCP", async () => {
     const body = await callMcpTool(baseUrl, token, "get_anomaly", { id: "missing" }, "anomaly-missing");
     assert.equal(body.error?.data?.code, error_codes.not_found);
+  });
+});
+
+describe("Loupe anomalies repro CLI", () => {
+  const reproLocator: Locator = {
+    primary: { selector: '[data-testid="primary-action"]', strategy: "stable_attr" },
+    alternates: [],
+    evidence: { tag: "button", nth_path: "body > main > button", parent_chain: [], stable_attrs: { "data-testid": "primary-action" } },
+  };
+
+  it("generates an offline replay test from a captured bundle", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-repro-"));
+    const report = await writeAnomaly(home, {
+      schema_version: LOUPE_SCHEMA_VERSION,
+      source: "manual",
+      summary: "Manual anomaly: primary action resolved to the wrong element",
+      breadcrumbs: [],
+      env: {},
+      locator: reproLocator,
+      resolve_result: { locator_status: "resolved", confidence: 1, matched_by: ["primary_selector"] },
+      dom_html: `<main data-testid="settings-panel"><button data-testid="primary-action" data-loupe-target="">Publish</button></main>`,
+    });
+
+    const out = join(home, "generated.repro.test.ts");
+    const code = await anomalies({ anomaliesAction: "repro", anomalyId: report.id, home, out }, silentStream(), silentStream());
+
+    assert.equal(code, 0);
+    const source = await readFile(out, "utf8");
+    assert.match(source, new RegExp(`anomaly repro ${report.id}`));
+    assert.match(source, /import \{ resolve, type Locator, type ResolveResult \} from ".\/schema.js";/);
+    assert.match(source, /const DOM_HTML = `<main data-testid="settings-panel"/);
+    assert.match(source, /result\.locator_status,\s*"resolved"/);
+    assert.match(source, /did not return the captured target element/);
+  });
+
+  it("fails clearly for an unknown anomaly id", async () => {
+    const home = await mkdtemp(join(tmpdir(), "loupe-repro-"));
+    const code = await anomalies({ anomaliesAction: "repro", anomalyId: "nope", home, out: join(home, "x.ts") }, silentStream(), silentStream());
+    assert.equal(code, 1);
+  });
+
+  it("parses the anomalies repro command", () => {
+    assert.deepEqual(parseCli(["anomalies", "repro", "abc", "--out", "/tmp/x.ts"]), {
+      command: "anomalies",
+      port: LOUPE_DEFAULT_PORT,
+      anomaliesAction: "repro",
+      anomalyId: "abc",
+      out: "/tmp/x.ts",
+    });
   });
 });
 
@@ -1251,6 +1301,10 @@ async function postMark(baseUrl: string, token: string, annotation: Annotation):
 
 async function assertOk(response: Response): Promise<void> {
   if (response.status !== 200) assert.fail(`Expected 200 response, got ${response.status}: ${await response.text()}`);
+}
+
+function silentStream(): Pick<NodeJS.WriteStream, "write"> {
+  return { write: () => true };
 }
 
 function sampleAnomaly(overrides: Partial<AnomalyReportInput> = {}): AnomalyReportInput {
