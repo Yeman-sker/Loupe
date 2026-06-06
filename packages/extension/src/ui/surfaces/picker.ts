@@ -193,13 +193,20 @@ export function attachPicker(
   // Dwell timer: show breadcrumb after 800ms of stationary hover
   let dwellTimer = -1;
 
+  let dwellElement: Element | null = null;
+
   function startDwell(el: Element, rect: DOMRect): void {
+    dwellElement = el;
     clearTimeout(dwellTimer);
-    dwellTimer = setTimeout(() => showBreadcrumb(el, rect), 800) as unknown as number;
+    dwellTimer = setTimeout(() => {
+      dwellElement = null;
+      showBreadcrumb(el, rect);
+    }, 800) as unknown as number;
   }
 
   function clearDwell(): void {
     clearTimeout(dwellTimer);
+    dwellElement = null;
   }
 
   // --- Keyboard focus helper ---
@@ -214,11 +221,11 @@ export function attachPicker(
   // --- Event listeners ---
   function onMove(e: Event): void {
     const me = e as MouseEvent;
-    hideBreadcrumb();
-    clearDwell();
 
     const el = resolveAt(doc, me.clientX, me.clientY);
     if (el === null || isInsideLoupeRoot(el)) {
+      hideBreadcrumb();
+      clearDwell();
       if (currentHover !== null) {
         currentHover = null;
         scheduleFrame();
@@ -228,14 +235,19 @@ export function attachPicker(
     }
     const sameEl = currentHover?.element === el;
     if (!sameEl) {
+      hideBreadcrumb();
+      clearDwell();
       const rect = el.getBoundingClientRect();
       currentHover = { element: el, rect };
       scheduleFrame();
       handlers.onHover(currentHover);
       startDwell(el, rect);
     } else {
-      // Still schedule frame in case scroll changed position
+      // Still schedule frame in case scroll changed position. Do not clear the
+      // dwell timer for same-element pointer jitter; Playwright and real mice can
+      // emit extra moves at the same coordinate before the 800ms hover dwell.
       scheduleFrame();
+      if (bcEl.style.display !== "none" && dwellElement === null) hideBreadcrumb();
     }
   }
 

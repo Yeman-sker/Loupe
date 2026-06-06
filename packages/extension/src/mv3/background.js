@@ -4,9 +4,13 @@ const MESSAGE_TYPES = Object.freeze({
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
   TOGGLE_STATUS_BAR: "loupe.status_bar.toggle",
   CONTENT_PROBE: "loupe.content.probe",
+  PAIR_DAEMON: "loupe.daemon.pair",
 });
 
 const LOUPE_AUTH_SCHEME = "Bearer";
+const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
+const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
+const LOUPE_DAEMON_NAME = "loupe";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.session.set({
@@ -138,6 +142,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.PAIR_DAEMON) {
+    void pairDaemon(message).then(sendResponse, (error) => {
+      sendResponse({ ok: false, paired: false, error: errorMessage(error) });
+    });
+    return true;
+  }
+
   if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
     void handleServiceWorkerWake(message).then(sendResponse, (error) => {
       sendResponse({ ok: false, error: errorMessage(error) });
@@ -176,13 +187,52 @@ async function handleRequestOriginAuth(message, sender) {
   return { ok: true, authorized: granted, origin, origin_pattern: origins[0] };
 }
 
+async function pairDaemon(message) {
+  const input = isObject(message.daemon) ? message.daemon : message;
+  const baseUrl = typeof input.base_url === "string" && input.base_url.length > 0 ? input.base_url : LOUPE_DAEMON_BASE_URL;
+  if (typeof input.token !== "string" || input.token.length === 0) return { ok: false, paired: false, token_missing: true, error: "Daemon token is required" };
+  let health;
+  try {
+    const response = await fetch(joinDaemonUrl(baseUrl, "/health"));
+    if (!response.ok) throw new Error(`GET /health failed with ${response.status}`);
+    health = await response.json();
+  } catch (error) {
+    return { ok: false, paired: false, daemon_offline: true, error: errorMessage(error) };
+  }
+  if (!isObject(health) || health.ok !== true || health.name !== LOUPE_DAEMON_NAME) return { ok: false, paired: false, error: "Health endpoint is not a Loupe daemon" };
+
+  const pairing = {
+    base_url: baseUrl,
+    token: input.token,
+    paired_at: new Date().toISOString(),
+    ...(typeof input.token_path === "string" ? { token_path: input.token_path } : {}),
+    ...(typeof health.project_id === "string" ? { project_id: health.project_id } : {}),
+    ...(typeof health.workspace_root_hash === "string" ? { workspace_root_hash: health.workspace_root_hash } : {}),
+    ...(typeof health.branch === "string" ? { branch: health.branch } : {}),
+  };
+  await chrome.storage.local.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
+  return {
+    ok: true,
+    paired: true,
+    base_url: baseUrl,
+    ...(typeof pairing.project_id === "string" ? { project_id: pairing.project_id } : {}),
+    ...(typeof pairing.workspace_root_hash === "string" ? { workspace_root_hash: pairing.workspace_root_hash } : {}),
+    ...(typeof pairing.branch === "string" ? { branch: pairing.branch } : {}),
+  };
+}
+
 async function handleServiceWorkerWake(message) {
   const now = new Date().toISOString();
   await chrome.storage.session.set(serviceWorkerWakeState(now));
 
   const scope = wakeScope(message);
-  const daemon = wakeDaemon(message);
-  if (!scope || !daemon) return { ok: true, reconciled: false, retried: 0, stored: 0 };
+  if (!scope) return { ok: true, reconciled: false, retried: 0, stored: 0 };
+  const daemon = wakeDaemon(message) || await storedDaemon();
+  if (!daemon) {
+    const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
+    const stored = await chrome.storage.local.get(marksKey);
+    return { ok: true, reconciled: false, retried: 0, stored: readAnnotationArray(stored?.[marksKey]).length, token_missing: true };
+  }
 
   const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
   const stored = await chrome.storage.local.get(marksKey);
@@ -234,6 +284,14 @@ function wakeScope(message) {
 
 function wakeDaemon(message) {
   const daemon = isObject(message.daemon) ? message.daemon : message;
+  if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return null;
+  return { base_url: daemon.base_url, token: daemon.token };
+}
+
+async function storedDaemon() {
+  const stored = await chrome.storage.local.get(LOUPE_DAEMON_STORAGE_KEY);
+  const daemon = stored?.[LOUPE_DAEMON_STORAGE_KEY];
+  if (!isObject(daemon)) return null;
   if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return null;
   return { base_url: daemon.base_url, token: daemon.token };
 }

@@ -6,6 +6,7 @@ export const MESSAGE_TYPES = Object.freeze({
   GET_ORIGIN_AUTH: "loupe.origin_auth.get",
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
+  PAIR_DAEMON: "loupe.daemon.pair",
 });
 
 export type ChromeLike = {
@@ -73,6 +74,14 @@ type DaemonCredentials = {
   readonly token: string;
 };
 
+type DaemonPairing = DaemonCredentials & {
+  readonly paired_at: string;
+  readonly token_path?: string;
+  readonly project_id?: string;
+  readonly workspace_root_hash?: string;
+  readonly branch?: string;
+};
+
 type SyncState = {
   readonly status?: string;
   readonly retry_count?: number;
@@ -92,7 +101,9 @@ type Annotation = Record<string, unknown> & {
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 const LOUPE_AUTH_SCHEME = "Bearer";
-
+const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
+const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
+const LOUPE_DAEMON_NAME = "loupe";
 export function origin_from_message_or_sender(message: unknown, sender: ChromeMessageSender): string | undefined {
   if (is_record(message) && typeof message.origin === "string") return origin_from_url_or_origin(message.origin);
   const sender_url = sender.tab?.url ?? sender.url;
@@ -214,6 +225,51 @@ export async function persist_service_worker_wake(storage: Pick<ChromeLike["stor
   await storage.session.set(service_worker_wake_state(now));
 }
 
+export async function pair_daemon(
+  storage: ChromeLike["storage"]["local"],
+  message: unknown,
+  now: string,
+  fetch_like: FetchLike = fetch,
+): Promise<Record<string, unknown>> {
+  const input = is_record(message) && is_record(message.daemon) ? message.daemon : message;
+  if (!is_record(input)) return { ok: false, paired: false, error: "Daemon pairing payload is required" };
+  const base_url = typeof input.base_url === "string" && input.base_url.length > 0 ? input.base_url : LOUPE_DAEMON_BASE_URL;
+  if (typeof input.token !== "string" || input.token.length === 0) return { ok: false, paired: false, token_missing: true, error: "Daemon token is required" };
+
+  let health: unknown;
+  try {
+    const response = await fetch_like(join_daemon_url(base_url, "/health"));
+    if (!response.ok) throw new Error(`GET /health failed with ${response.status}`);
+    health = await response.json();
+  } catch (error) {
+    return { ok: false, paired: false, daemon_offline: true, error: error_message(error) };
+  }
+
+  if (!is_record(health) || health.ok !== true || health.name !== LOUPE_DAEMON_NAME) {
+    return { ok: false, paired: false, error: "Health endpoint is not a Loupe daemon" };
+  }
+
+  const pairing: DaemonPairing = {
+    base_url,
+    token: input.token,
+    paired_at: now,
+    ...(typeof input.token_path === "string" ? { token_path: input.token_path } : {}),
+    ...(typeof health.project_id === "string" ? { project_id: health.project_id } : {}),
+    ...(typeof health.workspace_root_hash === "string" ? { workspace_root_hash: health.workspace_root_hash } : {}),
+    ...(typeof health.branch === "string" ? { branch: health.branch } : {}),
+  };
+  await storage.set({ [LOUPE_DAEMON_STORAGE_KEY]: pairing });
+
+  return {
+    ok: true,
+    paired: true,
+    base_url,
+    ...(pairing.project_id === undefined ? {} : { project_id: pairing.project_id }),
+    ...(pairing.workspace_root_hash === undefined ? {} : { workspace_root_hash: pairing.workspace_root_hash }),
+    ...(pairing.branch === undefined ? {} : { branch: pairing.branch }),
+  };
+}
+
 export async function handle_service_worker_wake(
   storage: ChromeLike["storage"],
   message: unknown,
@@ -223,8 +279,13 @@ export async function handle_service_worker_wake(
   await persist_service_worker_wake(storage, now);
 
   const scope = wake_scope(message);
-  const daemon = wake_daemon(message);
-  if (scope === undefined || daemon === undefined) return { ok: true, reconciled: false, retried: 0, stored: 0 };
+  if (scope === undefined) return { ok: true, reconciled: false, retried: 0, stored: 0 };
+  const daemon = wake_daemon(message) ?? await stored_daemon(storage.local);
+  if (daemon === undefined) {
+    const marks_key = session_marks_key(scope.project_id, scope.session_id);
+    const stored = await storage.local.get(marks_key);
+    return { ok: true, reconciled: false, retried: 0, stored: read_annotation_array(stored[marks_key]).length, token_missing: true };
+  }
 
   const marks_key = session_marks_key(scope.project_id, scope.session_id);
   const stored = await storage.local.get(marks_key);
@@ -276,6 +337,14 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
       return true;
     }
 
+    if (message.type === MESSAGE_TYPES.PAIR_DAEMON) {
+      void pair_daemon(chrome_like.storage.local, message, now()).then(
+        sendResponse,
+        (error) => sendResponse({ ok: false, paired: false, error: error_message(error) }),
+      );
+      return true;
+    }
+
     if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
       void handle_service_worker_wake(chrome_like.storage, message, now()).then(
         sendResponse,
@@ -320,6 +389,17 @@ function wake_daemon(message: unknown): DaemonCredentials | undefined {
   const daemon = is_record(message.daemon) ? message.daemon : message;
   if (typeof daemon.base_url !== "string" || typeof daemon.token !== "string" || daemon.base_url.length === 0 || daemon.token.length === 0) return undefined;
   return { base_url: daemon.base_url, token: daemon.token };
+}
+
+async function stored_daemon(storage: ChromeLike["storage"]["local"]): Promise<DaemonCredentials | undefined> {
+  const stored = await storage.get(LOUPE_DAEMON_STORAGE_KEY);
+  return read_daemon_credentials(stored[LOUPE_DAEMON_STORAGE_KEY]);
+}
+
+function read_daemon_credentials(value: unknown): DaemonCredentials | undefined {
+  if (!is_record(value)) return undefined;
+  if (typeof value.base_url !== "string" || typeof value.token !== "string" || value.base_url.length === 0 || value.token.length === 0) return undefined;
+  return { base_url: value.base_url, token: value.token };
 }
 
 async function retry_local_mark(
