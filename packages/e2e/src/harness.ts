@@ -38,10 +38,12 @@ export interface DaemonInfo {
 
 export interface LoupeHelper {
   seedStorage: (items: Record<string, unknown>) => Promise<void>;
+  pairDaemon: () => Promise<unknown>;
+  getDaemonPairing: () => Promise<unknown>;
   open: (fixture?: string) => Promise<Page>;
   getLocalMarks: () => Promise<unknown[]>;
   getDaemonMarks: () => Promise<unknown[]>;
-  syncToDaemon: () => Promise<unknown[]>;
+  syncToDaemon: () => Promise<unknown>;
 }
 
 export interface WorkerFixtures {
@@ -112,9 +114,32 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
       );
     };
 
+    const pairDaemon = async (): Promise<unknown> => {
+      const health = await fetch(`${daemon.baseUrl}/health`).then((res) => res.json() as Promise<Record<string, unknown>>);
+      const pairing = {
+        base_url: daemon.baseUrl,
+        token: daemon.token,
+        paired_at: new Date().toISOString(),
+        token_path: "~/.loupe/token",
+        ...(typeof health.project_id === "string" ? { project_id: health.project_id } : {}),
+        ...(typeof health.workspace_root_hash === "string" ? { workspace_root_hash: health.workspace_root_hash } : {}),
+        ...(typeof health.branch === "string" ? { branch: health.branch } : {}),
+      };
+      await seedStorage({ "loupe:v1:daemon": pairing });
+      return { ok: true, paired: true, base_url: daemon.baseUrl };
+    };
+
+    const getDaemonPairing = async (): Promise<unknown> => {
+      return serviceWorker.evaluate(async () => {
+        const stored = await chrome.storage.local.get("loupe:v1:daemon");
+        return stored["loupe:v1:daemon"];
+      });
+    };
+
     const open = async (fixture = "index.html"): Promise<Page> => {
       // Seed deterministic English UI prefs before the page mounts.
       await seedStorage({ "loupe:v1:ui:prefs": { theme: "light", lang: "en" } });
+      await pairDaemon();
       const page = await context.newPage();
       await page.goto(fixtureServer.url(fixture));
       await page
@@ -156,29 +181,18 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
       return body.marks ?? [];
     };
 
-    // Push locally-saved marks to the sandbox daemon over the SAME authenticated
-    // /v1/marks contract the background worker uses (background.js retryLocalMark:
-    // POST JSON.stringify(mark) with a Bearer token). The extension performs this
-    // only when externally woken — no user action triggers it, and a service
-    // worker cannot message itself — so the harness drives the identical HTTP
-    // call rather than faking a runtime event.
-    const syncToDaemon = async (): Promise<unknown[]> => {
+    const syncToDaemon = async (): Promise<unknown> => {
       const local = await getLocalMarks();
-      const results: unknown[] = [];
-      for (const mark of local) {
-        const res = await fetch(`${daemon.baseUrl}/v1/marks`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${daemon.token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(mark),
-        });
-        results.push({ status: res.status, body: await res.json().catch(() => null) });
-      }
-      return results;
+      const scope = (local[0] as { project?: Record<string, string> } | undefined)?.project;
+      if (scope === undefined) return { ok: false, error: "No local mark scope" };
+      return serviceWorker.evaluate(
+        (s: Record<string, string>) => new Promise((resolve) => {
+          chrome.runtime.sendMessage({ type: "loupe.service_worker.wake", scope: s }, (response: unknown) => resolve(response));
+        }),
+        scope,
+      );
     };
 
-    await use({ seedStorage, open, getLocalMarks, getDaemonMarks, syncToDaemon });
+    await use({ seedStorage, pairDaemon, getDaemonPairing, open, getLocalMarks, getDaemonMarks, syncToDaemon });
   },
 });

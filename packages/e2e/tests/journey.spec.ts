@@ -63,8 +63,11 @@ test("golden path: pick → intent → pin → detail → resolve → view-all",
   await expect(page.locator(".va-c")).toContainText("Fix the hero heading copy");
 });
 
-test("mark syncs to the sandbox daemon", async ({ loupe }) => {
+test("mark syncs to the sandbox daemon through stored pairing", async ({ loupe }) => {
   const page = await loupe.open();
+
+  const pairing = await loupe.getDaemonPairing();
+  expect(JSON.stringify(pairing)).toContain("token");
 
   // Drive a minimal save using the secondary CTA (near top of page).
   await page.locator(".lp-ready-pick").click();
@@ -77,12 +80,8 @@ test("mark syncs to the sandbox daemon", async ({ loupe }) => {
   // Verify local storage.
   expect(await loupe.getLocalMarks()).toHaveLength(1);
 
-  // Push to the sandbox daemon over the same authenticated /v1/marks contract
-  // the background worker uses, then verify the daemon stored it. (The extension
-  // only syncs when externally woken — no user action triggers it — so the
-  // harness drives the identical HTTP call rather than faking a UI event.)
-  await loupe.syncToDaemon();
-  const daemonMarks = await loupe.getDaemonMarks();
-  expect(daemonMarks.length).toBeGreaterThanOrEqual(1);
-  expect(JSON.stringify(daemonMarks)).toContain("Sync me");
+  // The UI wakes the extension service worker after save. The background worker
+  // reads chrome.storage.local["loupe:v1:daemon"] and performs authenticated sync;
+  // the test never passes a token into the wake message.
+  await expect.poll(async () => JSON.stringify(await loupe.getDaemonMarks()), { timeout: 5_000 }).toContain("Sync me");
 });

@@ -306,6 +306,28 @@ describe("UI-2 · surface-picker", () => {
         "breadcrumb should be hidden after pointermove",
       );
     });
+
+    it("keeps same-element pointer jitter from cancelling hover dwell", async () => {
+      const doc = new FakeDoc();
+      const el = new FakeEl("h1");
+      const parent = new FakeEl("main");
+      el.parentElement = parent;
+      doc.setFromPoint(el);
+      const dom = makeDom(doc);
+      const handlers = makeHandlers();
+
+      const picker = attachPicker(doc as unknown as Document, dom, fakeTrans, handlers);
+
+      doc.dispatchCapture("pointermove", makeFakeEvent({ clientX: 50, clientY: 50 }));
+      doc.dispatchCapture("pointermove", makeFakeEvent({ clientX: 50, clientY: 50 }));
+      await new Promise((resolve) => setTimeout(resolve, 850));
+
+      assert.notEqual(
+        (picker.breadcrumbEl as unknown as FakeEl).style["display"],
+        "none",
+        "breadcrumb should appear after dwell despite same-target pointer jitter",
+      );
+    });
   });
 
   describe("Shadow DOM penetration", () => {

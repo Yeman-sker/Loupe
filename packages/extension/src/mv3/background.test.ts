@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decide_origin_authorization, handle_service_worker_wake, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
+import { decide_origin_authorization, handle_service_worker_wake, pair_daemon, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {
@@ -196,6 +196,52 @@ describe("background origin authorization", () => {
   });
 });
 
+describe("background daemon pairing", () => {
+  it("stores daemon credentials in chrome.storage.local after health verification", async () => {
+    const store: Record<string, unknown> = {};
+
+    const result = await pair_daemon(
+      {
+        get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+        set: async (items) => void Object.assign(store, items),
+      },
+      { type: "loupe.daemon.pair", daemon: { base_url: "http://127.0.0.1:7373", token: "secret-token", token_path: "~/.loupe/token" } },
+      "2026-01-01T00:00:00.000Z",
+      async (url) => {
+        assert.equal(String(url), "http://127.0.0.1:7373/health");
+        return Response.json({ ok: true, name: "loupe", project_id: "project-1", workspace_root_hash: "workspace-root-hash" });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, paired: true, base_url: "http://127.0.0.1:7373", project_id: "project-1", workspace_root_hash: "workspace-root-hash" });
+    assert.deepEqual(store["loupe:v1:daemon"], {
+      base_url: "http://127.0.0.1:7373",
+      token: "secret-token",
+      paired_at: "2026-01-01T00:00:00.000Z",
+      token_path: "~/.loupe/token",
+      project_id: "project-1",
+      workspace_root_hash: "workspace-root-hash",
+    });
+  });
+
+  it("reports missing token without writing daemon storage", async () => {
+    const store: Record<string, unknown> = {};
+
+    const result = await pair_daemon(
+      {
+        get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+        set: async (items) => void Object.assign(store, items),
+      },
+      { type: "loupe.daemon.pair", daemon: { base_url: "http://127.0.0.1:7373" } },
+      "2026-01-01T00:00:00.000Z",
+      async () => Response.json({ ok: true, name: "loupe" }),
+    );
+
+    assert.deepEqual(result, { ok: false, paired: false, token_missing: true, error: "Daemon token is required" });
+    assert.equal(store["loupe:v1:daemon"], undefined);
+  });
+});
+
 describe("background service worker wake", () => {
   it("retries unsynced marks and reconciles daemon marks without storing the token", async () => {
     const key = "loupe:v1:project:project-1:session:session-1:marks";
@@ -250,6 +296,73 @@ describe("background service worker wake", () => {
     assert.equal(JSON.stringify(store).includes("secret-token"), false);
     assert.equal(((store[key] as Array<{ sync: { status: string }; intent: { comment: string } }>)[0]?.sync.status), "synced");
     assert.equal(((store[key] as Array<{ sync: { status: string }; intent: { comment: string } }>)[0]?.intent.comment), "daemon");
+  });
+
+  it("uses paired daemon credentials from local storage when wake omits token", async () => {
+    const key = "loupe:v1:project:project-1:session:session-1:marks";
+    const local_mark = {
+      id: "mark-paired",
+      project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
+      target: { resolution: {} },
+      intent: { comment: "paired", kind: "copy" },
+      lifecycle: { created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", task_status: "open" },
+      sync: { status: "local_only", retry_count: 0 },
+    };
+    const store: Record<string, unknown> = {
+      [key]: [local_mark],
+      "loupe:v1:daemon": { base_url: "http://127.0.0.1:7373", token: "stored-token", paired_at: "2026-01-01T00:00:00.000Z" },
+    };
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake", scope: local_mark.project },
+      "2026-01-01T00:00:01.000Z",
+      async (url, init) => {
+        requests.push({ url: String(url), init });
+        if (init?.method === "POST") return new Response("{}", { status: 200 });
+        return Response.json({ marks: [] });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, reconciled: true, retried: 1, stored: 1 });
+    assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer stored-token");
+    assert.equal((requests[1]?.init?.headers as Record<string, string>).authorization, "Bearer stored-token");
+    assert.equal(JSON.stringify(store).includes("stored-token"), true);
+  });
+
+  it("reports token_missing and keeps local mark when no paired daemon exists", async () => {
+    const key = "loupe:v1:project:project-1:session:session-1:marks";
+    const local_mark = {
+      id: "mark-token-missing",
+      project: { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" },
+      sync: { status: "local_only", retry_count: 0 },
+    };
+    const store: Record<string, unknown> = { [key]: [local_mark] };
+
+    const result = await handle_service_worker_wake(
+      {
+        session: { set: async () => undefined },
+        local: {
+          get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+          set: async (items) => void Object.assign(store, items),
+        },
+      },
+      { type: "loupe.service_worker.wake", scope: local_mark.project },
+      "2026-01-01T00:00:01.000Z",
+      async () => {
+        throw new Error("fetch should not be called without daemon credentials");
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, reconciled: false, retried: 0, stored: 1, token_missing: true });
+    assert.deepEqual(store[key], [local_mark]);
   });
 
   it("removes synced local marks omitted by daemon reconciliation after agent delete", async () => {

@@ -35,6 +35,7 @@ export const storage_key_prefix = "loupe:v1" as const;
 export const storage_keys = {
   projects_index: "loupe:v1:projects:index",
   settings: "loupe:v1:settings",
+  daemon: "loupe:v1:daemon",
   project_sessions_index: (project_id: string): `loupe:v1:project:${string}:sessions:index` =>
     `loupe:v1:project:${project_id}:sessions:index`,
   session_marks: (project_id: string, session_id: string): `loupe:v1:project:${string}:session:${string}:marks` =>

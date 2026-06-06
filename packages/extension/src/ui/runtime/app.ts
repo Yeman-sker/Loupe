@@ -33,6 +33,7 @@ import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEnt
 import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
 import { readPrefs } from "./prefs.js";
 
+const MESSAGE_SERVICE_WORKER_WAKE = "loupe.service_worker.wake";
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
   set: (items: Record<string, unknown>) => Promise<void>;
@@ -67,6 +68,7 @@ type AppState = {
   markCount: number;
   openDetail: string | null;
   showViewAll: boolean;
+  daemonTokenMissing: boolean;
   daemonOnline: boolean;
   showProjectChooser: boolean;
   showFallback: boolean;
@@ -402,6 +404,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     markCount: 0,
     openDetail: null,
     showViewAll: false,
+    daemonTokenMissing: false,
     daemonOnline: true,
     showProjectChooser: false,
     showFallback: false,
@@ -823,22 +826,23 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   }
 
   // Derive the status-bar model from signals the UI already holds. The UI never
-  // sees the daemon token (exposes_token_to_page:false), so "token missing" is
-  // only emitted when a future background signal sets it; today we distinguish
-  // offline / sync-failed / local-only / connected from daemon health + pins.
+  // sees the daemon token value (exposes_token_to_page:false); background only
+  // reports token_missing as a boolean.
   function statusModel(): StatusModel {
     const synced = state.pins.filter((p) => p.sync === "synced").length;
     const pending = state.pins.filter((p) => p.sync === "local" || p.sync === "failed").length;
     const failed = state.pins.some((p) => p.sync === "failed");
     const kind: StatusModel["kind"] = !state.daemonOnline
       ? "offline"
-      : failed
-        ? "sync_failed"
-        : pending > 0
-          ? "local_only"
-          : "connected";
+      : state.daemonTokenMissing
+        ? "token_missing"
+        : failed
+          ? "sync_failed"
+          : pending > 0
+            ? "local_only"
+            : "connected";
     const model: StatusModel = { kind, syncedCount: synced, pendingCount: pending };
-    if (kind === "offline") model.tokenPath = "~/.loupe/token";
+    if (kind === "offline" || kind === "token_missing") model.tokenPath = "~/.loupe/token";
     return model;
   }
 
@@ -915,16 +919,60 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     // Show "Add another" near the new pin
     showAddAnother(rect);
 
-    // Passive daemon health check after save — surface fallback if offline.
-    // Save already succeeded above; this never blocks or fails the save.
+    void syncSavedAnnotation(annotation.id, project);
+  }
+
+  async function syncSavedAnnotation(markId: string, project: Annotation["project"]): Promise<void> {
+    const runtime = extensionRuntime();
+    if (runtime === undefined || opts.storage === undefined) {
+      void updateDaemonHealthAfterSave();
+      return;
+    }
+
+    const response = await runtimeMessage(runtime, { type: MESSAGE_SERVICE_WORKER_WAKE, scope: project });
+    if (isRecord(response) && response.reconciled === true) {
+      await refreshStoredAnnotation(markId, project);
+      state.daemonOnline = true;
+      state.showFallback = false;
+      state.daemonTokenMissing = false;
+      render();
+      return;
+    }
+
+    if (isRecord(response) && response.token_missing === true) {
+      state.daemonTokenMissing = true;
+      state.daemonOnline = true;
+      state.showStatusBar = true;
+      render();
+      return;
+    }
+
+    void updateDaemonHealthAfterSave();
+  }
+
+  async function refreshStoredAnnotation(markId: string, project: Annotation["project"]): Promise<void> {
+    if (opts.storage === undefined) return;
+    const key = session_marks_key(project.project_id, project.session_id);
+    const stored = await opts.storage.get(key).catch(() => ({} as Record<string, unknown>));
+    const raw = stored[key];
+    if (!Array.isArray(raw)) return;
+    const annotation = (raw as Annotation[]).find((mark) => mark.id === markId);
+    if (annotation === undefined) return;
+    annotations.set(markId, annotation);
+    const pin = state.pins.find((p) => p.id === markId);
+    const nextSync = annotationToPinRecord(annotation, pin?.num ?? 1, opts.document).sync;
+    if (pin !== undefined && nextSync !== undefined) pin.sync = nextSync;
+  }
+
+  async function updateDaemonHealthAfterSave(): Promise<void> {
     if (state.showFallback) return;
-    void probe_daemon_health().then((online) => {
-      state.daemonOnline = online;
-      if (!online) {
-        state.showFallback = true;
-        render();
-      }
-    });
+    const online = await probe_daemon_health().catch(() => false);
+    state.daemonOnline = online;
+    state.daemonTokenMissing = false;
+    if (!online) {
+      state.showFallback = true;
+      render();
+    }
   }
 
   function showAddAnother(pinRect: DOMRect): void {
@@ -1043,4 +1091,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   })();
 
   return app;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
