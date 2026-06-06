@@ -128,11 +128,12 @@ export function attachPicker(
       return;
     }
     const { rect } = target;
-    const scrollX = doc.defaultView?.scrollX ?? 0;
-    const scrollY = doc.defaultView?.scrollY ?? 0;
+    // The frame lives in the viewport-fixed surface overlay (host root is
+    // position:fixed), so getBoundingClientRect's viewport coords are used as-is.
+    // Adding scroll here would double-count it and push the frame off-screen.
     frameEl.style.display = "";
-    frameEl.style.left = `${rect.left + scrollX}px`;
-    frameEl.style.top = `${rect.top + scrollY}px`;
+    frameEl.style.left = `${rect.left}px`;
+    frameEl.style.top = `${rect.top}px`;
     frameEl.style.width = `${rect.width}px`;
     frameEl.style.height = `${rect.height}px`;
     dimEl.textContent = `${Math.round(rect.width)}×${Math.round(rect.height)}`;
@@ -179,10 +180,9 @@ export function attachPicker(
     bold.textContent = currentLabel;
     bcEl.appendChild(bold);
 
-    const scrollX = doc.defaultView?.scrollX ?? 0;
-    const scrollY = doc.defaultView?.scrollY ?? 0;
-    bcEl.style.left = `${rect.left + scrollX}px`;
-    bcEl.style.top = `${Math.max(12, rect.top + scrollY - 34)}px`;
+    // Viewport-fixed overlay (see updateFrame) — use viewport coords directly.
+    bcEl.style.left = `${rect.left}px`;
+    bcEl.style.top = `${Math.max(12, rect.top - 34)}px`;
     bcEl.style.display = "";
   }
 
