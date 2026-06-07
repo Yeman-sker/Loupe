@@ -4,15 +4,15 @@
       "path": "packages/shared",
       "command": "/publish-share",
       "publishCommand": "npm publish ./packages/shared --access public",
-      "lastPublishedVersion": "0.3.0",
-      "lastPublishedInputHash": "sha256:d14d0038b1a73e2f1088b2f2b8c66fa59b178ca70410a3994e682f1a1af4e78f"
+      "lastPublishedVersion": "0.4.0",
+      "lastPublishedInputHash": "sha256:f513ae97650ae73380beed29d4122bd86c52e99c46fa383754087396eca7f708"
     },
     "@loupe-server/server": {
       "path": "packages/server",
       "command": "/publish-server",
       "publishCommand": "npm publish ./packages/server --access public",
-      "lastPublishedVersion": "0.3.0",
-      "lastPublishedInputHash": "sha256:e4c2cc86afa376cf23893a6b98d85eb802ef79e693f2d1e9122629d46e4747ec"
+      "lastPublishedVersion": "0.4.0",
+      "lastPublishedInputHash": "sha256:d92f056f09b33ae53f1a5fa00260d9bb0a0e0a97fcb0ae0104f781cef3c2b9d2"
     }
   }
 }
