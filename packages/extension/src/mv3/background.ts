@@ -7,6 +7,8 @@ export const MESSAGE_TYPES = Object.freeze({
   REQUEST_ORIGIN_AUTH: "loupe.origin_auth.request",
   SERVICE_WORKER_WAKE: "loupe.service_worker.wake",
   PAIR_DAEMON: "loupe.daemon.pair",
+  RESOLVE_MARK: "loupe.mark.resolve",
+  DELETE_MARK: "loupe.mark.delete",
 });
 
 export const MARK_STREAM_PORT_NAME = "loupe.mark_stream";
@@ -343,6 +345,34 @@ export async function handle_service_worker_wake(
   }
 }
 
+// Page-originated resolve / delete write path. The page never holds the token
+// (exposes_token_to_page:false): it sends a token-free {id, scope} message after
+// its optimistic local update, and the SW performs the authenticated daemon
+// write. The daemon then echoes the change back over SSE, keeping page and
+// daemon convergent. Delete reuses the existing delete-retry path (idempotent on
+// an already-removed local mark); resolve POSTs /v1/marks/{id}/resolve.
+export async function handle_mark_mutation(
+  storage: ChromeLike["storage"]["local"],
+  message: unknown,
+  action: "resolve" | "delete",
+  now: string,
+  fetch_like: FetchLike = fetch,
+): Promise<Record<string, unknown>> {
+  const scope = wake_scope(message);
+  const id = is_record(message) && typeof message.id === "string" ? message.id : undefined;
+  if (id === undefined || scope === undefined) return { ok: false, error: "mark id and scope are required" };
+  const daemon = await stored_daemon(storage);
+  if (daemon === undefined) return { ok: true, token_missing: true };
+  const marks_key = session_marks_key(scope.project_id, scope.session_id);
+  const mark: Annotation = { id, project: scope };
+  if (action === "delete") {
+    await retry_delete_mark(storage, fetch_like, marks_key, mark, daemon);
+    return { ok: true, deleted: true };
+  }
+  await retry_resolve_mark(storage, fetch_like, marks_key, mark, daemon, now);
+  return { ok: true, resolved: true };
+}
+
 export function install_background_listeners(chrome_like: ChromeLike, now: () => string = () => new Date().toISOString()): void {
   chrome_like.runtime.onInstalled.addListener(() => {
     void persist_service_worker_wake(chrome_like.storage, now());
@@ -380,6 +410,15 @@ export function install_background_listeners(chrome_like: ChromeLike, now: () =>
 
     if (message.type === MESSAGE_TYPES.SERVICE_WORKER_WAKE) {
       void handle_service_worker_wake(chrome_like.storage, message, now()).then(
+        sendResponse,
+        (error) => sendResponse({ ok: false, error: error_message(error) }),
+      );
+      return true;
+    }
+
+    if (message.type === MESSAGE_TYPES.RESOLVE_MARK || message.type === MESSAGE_TYPES.DELETE_MARK) {
+      const action = message.type === MESSAGE_TYPES.RESOLVE_MARK ? "resolve" : "delete";
+      void handle_mark_mutation(chrome_like.storage.local, message, action, now()).then(
         sendResponse,
         (error) => sendResponse({ ok: false, error: error_message(error) }),
       );
@@ -689,6 +728,25 @@ async function retry_delete_mark(
   }
 }
 
+async function retry_resolve_mark(
+  storage: ChromeLike["storage"]["local"],
+  fetch_like: FetchLike,
+  marks_key: string,
+  mark: Annotation,
+  daemon: DaemonCredentials,
+  now: string,
+): Promise<void> {
+  try {
+    const response = await fetch_like(mark_resolve_url(daemon.base_url, mark), { method: "POST", headers: authorized_headers(daemon.token) });
+    if (!response.ok) throw new Error(`POST /v1/marks/${mark.id}/resolve failed with ${response.status}`);
+    const current = await read_stored_mark(storage, marks_key, mark.id);
+    if (current !== undefined) await replace_stored_mark(storage, marks_key, { ...current, sync: { status: "synced", retry_count: current.sync?.retry_count ?? 0, last_synced_at: now } });
+  } catch (error) {
+    const current = await read_stored_mark(storage, marks_key, mark.id);
+    if (current !== undefined) await replace_stored_mark(storage, marks_key, { ...current, sync: { status: "failed", retry_count: (current.sync?.retry_count ?? 0) + 1, last_error: error_message(error) } });
+  }
+}
+
 async function reconcile_daemon_marks(
   storage: ChromeLike["storage"]["local"],
   marks_key: string,
@@ -839,6 +897,18 @@ function session_marks_key(project_id: string, session_id: string): string {
 }
 function mark_delete_url(base_url: string, mark: Annotation): string {
   const url = new URL(join_daemon_url(base_url, `/v1/marks/${encodeURIComponent(String(mark.id))}`));
+  append_param(url, "project_id", mark_project_string(mark, "project_id"));
+  append_param(url, "workspace_root_hash", mark_project_string(mark, "workspace_root_hash"));
+  append_param(url, "branch", mark_project_string(mark, "branch"));
+  append_param(url, "origin", mark_project_string(mark, "origin"));
+  append_param(url, "url", mark_project_string(mark, "url"));
+  append_param(url, "route_key", mark_project_string(mark, "route_key"));
+  append_param(url, "session_id", mark_project_string(mark, "session_id"));
+  return url.href;
+}
+
+function mark_resolve_url(base_url: string, mark: Annotation): string {
+  const url = new URL(join_daemon_url(base_url, `/v1/marks/${encodeURIComponent(String(mark.id))}/resolve`));
   append_param(url, "project_id", mark_project_string(mark, "project_id"));
   append_param(url, "workspace_root_hash", mark_project_string(mark, "workspace_root_hash"));
   append_param(url, "branch", mark_project_string(mark, "branch"));

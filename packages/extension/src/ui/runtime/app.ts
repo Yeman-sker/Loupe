@@ -38,6 +38,8 @@ import { readPrefs } from "./prefs.js";
 
 const PROJECT_ONBOARDING_PREFIX = "loupe:v1:project-onboarding";
 const MESSAGE_SERVICE_WORKER_WAKE = "loupe.service_worker.wake";
+const MESSAGE_MARK_RESOLVE = "loupe.mark.resolve";
+const MESSAGE_MARK_DELETE = "loupe.mark.delete";
 export type UiStorage = {
   get: (key: string) => Promise<Record<string, unknown>>;
   set: (items: Record<string, unknown>) => Promise<void>;
@@ -803,12 +805,15 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       }
     }
     state.openDetail = null;
+    // Push the resolve to the daemon (SW holds the token; page stays token-free).
+    if (annotation !== undefined) notifyDaemonMutation(MESSAGE_MARK_RESOLVE, pinId, annotation.project);
     render();
   }
 
   function doDelete(pinId: string): void {
     const pin = state.pins.find((p) => p.id === pinId);
     if (pin === undefined) return;
+    const annotation = annotations.get(pinId);
     state.pins = state.pins.filter((p) => p.id !== pinId);
     annotations.delete(pinId);
     state.openDetail = null;
@@ -822,7 +827,17 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
         void delete_annotation(store, project.project_id, project.session_id, pinId);
       }
     }
+    // Push the delete to the daemon so it can't resurrect the mark via SSE.
+    if (annotation !== undefined) notifyDaemonMutation(MESSAGE_MARK_DELETE, pinId, annotation.project);
     render();
+  }
+
+  // Token-free page→daemon write notification. The SW owns the daemon token and
+  // performs the authenticated resolve/delete; the daemon echoes it back via SSE.
+  function notifyDaemonMutation(type: string, id: string, scope: Annotation["project"]): void {
+    const runtime = extensionRuntime();
+    if (runtime === undefined) return;
+    void runtimeMessage(runtime, { type, id, scope });
   }
 
   // Entry-point Retry: re-probe daemon, re-queue a failed mark as local_only.

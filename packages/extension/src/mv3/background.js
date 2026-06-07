@@ -5,6 +5,8 @@ const MESSAGE_TYPES = Object.freeze({
   TOGGLE_STATUS_BAR: "loupe.status_bar.toggle",
   CONTENT_PROBE: "loupe.content.probe",
   PAIR_DAEMON: "loupe.daemon.pair",
+  RESOLVE_MARK: "loupe.mark.resolve",
+  DELETE_MARK: "loupe.mark.delete",
 });
 
 const LOUPE_AUTH_SCHEME = "Bearer";
@@ -158,8 +160,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.RESOLVE_MARK || message.type === MESSAGE_TYPES.DELETE_MARK) {
+    const action = message.type === MESSAGE_TYPES.RESOLVE_MARK ? "resolve" : "delete";
+    void handleMarkMutation(message, action).then(sendResponse, (error) => {
+      sendResponse({ ok: false, error: errorMessage(error) });
+    });
+    return true;
+  }
+
   return false;
 });
+
+// Page-originated resolve / delete write path. The page stays token-free: it
+// sends {id, scope} after its optimistic local update and the SW performs the
+// authenticated daemon write, which the daemon echoes back over SSE.
+async function handleMarkMutation(message, action) {
+  const now = new Date().toISOString();
+  const scope = wakeScope(message);
+  const id = isObject(message) && typeof message.id === "string" ? message.id : undefined;
+  if (id === undefined || !scope) return { ok: false, error: "mark id and scope are required" };
+  const daemon = await storedDaemon();
+  if (!daemon) return { ok: true, token_missing: true };
+  const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
+  const mark = { id, project: scope };
+  if (action === "delete") {
+    await retryDeleteMark(marksKey, mark, daemon);
+    return { ok: true, deleted: true };
+  }
+  await retryResolveMark(marksKey, mark, daemon, now);
+  return { ok: true, resolved: true };
+}
 
 // Live daemon → page push. The SW owns the token and the SSE connection; the
 // page opens a Port and only receives token-free change frames. A connected Port
@@ -513,6 +543,18 @@ async function retryDeleteMark(marksKey, mark, daemon) {
   }
 }
 
+async function retryResolveMark(marksKey, mark, daemon, now) {
+  try {
+    const response = await fetch(markResolveUrl(daemon.base_url, mark), { method: "POST", headers: authorizedHeaders(daemon.token) });
+    if (!response.ok) throw new Error(`POST /v1/marks/${mark.id}/resolve failed with ${response.status}`);
+    const current = await readStoredMark(marksKey, mark.id);
+    if (current) await replaceStoredMark(marksKey, { ...current, sync: { status: "synced", retry_count: current.sync?.retry_count || 0, last_synced_at: now } });
+  } catch (error) {
+    const current = await readStoredMark(marksKey, mark.id);
+    if (current) await replaceStoredMark(marksKey, { ...current, sync: { status: "failed", retry_count: (current.sync?.retry_count || 0) + 1, last_error: errorMessage(error) } });
+  }
+}
+
 async function reconcileDaemonMarks(marksKey, scope, daemonMarks, preserveMissingIds = []) {
   const stored = await chrome.storage.local.get(marksKey);
   const localMarks = readAnnotationArray(stored?.[marksKey]);
@@ -635,6 +677,18 @@ function sessionMarksKey(projectId, sessionId) {
 
 function markDeleteUrl(baseUrl, mark) {
   const url = new URL(joinDaemonUrl(baseUrl, `/v1/marks/${encodeURIComponent(String(mark.id))}`));
+  appendParam(url, "project_id", mark.project?.project_id);
+  appendParam(url, "workspace_root_hash", mark.project?.workspace_root_hash);
+  appendParam(url, "branch", mark.project?.branch);
+  appendParam(url, "origin", mark.project?.origin);
+  appendParam(url, "url", mark.project?.url);
+  appendParam(url, "route_key", mark.project?.route_key);
+  appendParam(url, "session_id", mark.project?.session_id);
+  return url.href;
+}
+
+function markResolveUrl(baseUrl, mark) {
+  const url = new URL(joinDaemonUrl(baseUrl, `/v1/marks/${encodeURIComponent(String(mark.id))}/resolve`));
   appendParam(url, "project_id", mark.project?.project_id);
   appendParam(url, "workspace_root_hash", mark.project?.workspace_root_hash);
   appendParam(url, "branch", mark.project?.branch);
