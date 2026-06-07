@@ -531,6 +531,10 @@ function installShutdownHandlers(server: LoupeHttpServer, stdout: Pick<NodeJS.Wr
         writeLine(stdout, "Loupe daemon stopped.");
         process.exit(0);
       });
+      // Long-lived SSE streams (/v1/marks/stream) never close on their own, so
+      // server.close() would hang waiting on them. Force them shut so the daemon
+      // can exit promptly on SIGINT/SIGTERM.
+      server.closeAllConnections?.();
     });
   };
   process.once("SIGINT", stop);

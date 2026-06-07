@@ -13,6 +13,7 @@ import {
   type DeleteMarkResponse,
   type HealthPayload,
   type ListMarksResponse,
+  type MarkStreamEvent,
   type ProjectScopeCandidate,
   type ResolveMarkResponse,
   type StorageEnvelope,
@@ -28,6 +29,7 @@ import {
   type LoupeHomeOptions,
 } from "./loupe-home.js";
 import { loadMarkStore, saveStore, type MarkStore, type StoreWarning } from "./mark-store.js";
+import { MarkEventBus, type MarkChangeScope } from "./mark-events.js";
 
 export type { LoupeHomeOptions, ServerStatusOptions, TokenOptions } from "./loupe-home.js";
 export {
@@ -96,8 +98,11 @@ type RequestContext = {
   workspaceRoot: string;
   branch?: string;
   store: Promise<MarkStore>;
+  bus: MarkEventBus;
   console?: Pick<NodeJS.WriteStream, "write">;
 };
+
+const STREAM_KEEPALIVE_MS = 25_000;
 
 const DEFAULT_VERSION = "0.0.0";
 const MAX_BODY_BYTES = 1_048_576;
@@ -117,7 +122,7 @@ export function createServer(options: LoupeServerOptions = {}): LoupeHttpServer 
   const home = resolveLoupeHome(options.home);
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const store = loadMarkStore(home);
-  const requestContext: RequestContext = { port, token, version, home, workspaceRoot, store };
+  const requestContext: RequestContext = { port, token, version, home, workspaceRoot, store, bus: new MarkEventBus() };
   if (options.console !== undefined) requestContext.console = options.console;
   if (options.branch !== undefined) requestContext.branch = options.branch;
 
@@ -195,8 +200,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
 
+  if (url.pathname === "/v1/marks/stream") {
+    await handleMarkStream(request, response, url, await context.store, context.bus, context.console);
+    return;
+  }
+
   if (url.pathname === "/v1/marks" || url.pathname.startsWith("/v1/marks/")) {
-    await handleMarks(request, response, url, await context.store, context.console);
+    await handleMarks(request, response, url, await context.store, context.bus, context.console);
     return;
   }
 
@@ -211,7 +221,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "MCP endpoint requires POST." } });
       return;
     }
-    await handleMcp(request, response, await context.store, context.version, context.console);
+    await handleMcp(request, response, await context.store, context.version, context.bus, context.console);
     return;
   }
 
@@ -241,7 +251,7 @@ function isAuthorized(request: IncomingMessage, token: string): boolean {
   return token.length > 0 && received === token;
 }
 
-async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
+async function handleMcp(request: IncomingMessage, response: ServerResponse, store: MarkStore, version: string, bus: MarkEventBus, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
   let rpc: JsonRpcRequest;
   try {
     rpc = JSON.parse(await readRequestBody(request)) as JsonRpcRequest;
@@ -287,7 +297,7 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, sto
     const call = isRecord(rpc.params) ? rpc.params : undefined;
     const name = typeof call?.name === "string" ? call.name : undefined;
     const args = isRecord(call?.arguments) ? call.arguments : {};
-    const result = await callMcpTool(store, name, args);
+    const result = await callMcpTool(store, name, args, bus);
     if ("error" in result) {
       await appendDaemonLog(store.home, "ERROR", `mcp tools/call failed ${result.error.code}: ${result.error.message}`, { fields: logFieldsForArgs(args), console });
       writeJson(response, 200, jsonRpcError(id, -32000, result.error.message, result.error));
@@ -320,7 +330,7 @@ function mcpTools(): unknown[] {
   ];
 }
 
-async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
+async function callMcpTool(store: MarkStore, name: string | undefined, args: Record<string, unknown>, bus: MarkEventBus): Promise<{ result: unknown } | { error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } }> {
   if (name === "list_marks") {
     const result = listMarks(store, args);
     if (result.kind === "ok") return { result: result.value };
@@ -332,7 +342,7 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
     return { error: result.error };
   }
   if (name === "resolve_mark") {
-    const result = await resolveMark(store, args);
+    const result = await resolveMark(store, args, bus);
     if (result.kind === "ok") {
       await appendDaemonLog(store.home, "INFO", result.changed ? "mark resolved" : "mark resolve noop", { fields: logFieldsForMark(result.mark) });
       return { result: result.value };
@@ -340,7 +350,7 @@ async function callMcpTool(store: MarkStore, name: string | undefined, args: Rec
     return { error: result.error };
   }
   if (name === "delete_mark") {
-    const result = await deleteMark(store, args);
+    const result = await deleteMark(store, args, bus);
     if (result.kind === "ok") {
       await appendDaemonLog(store.home, "INFO", "mark deleted", { fields: logFieldsForMark(result.mark) });
       return { result: result.value };
@@ -367,7 +377,7 @@ function mcpToolResult(value: unknown): { content: Array<{ type: "text"; text: s
   };
 }
 
-async function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL, store: MarkStore, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
+async function handleMarks(request: IncomingMessage, response: ServerResponse, url: URL, store: MarkStore, bus: MarkEventBus, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
   if (url.pathname === "/v1/marks") {
     if (request.method === "GET") {
       const result = listMarks(store, Object.fromEntries(url.searchParams));
@@ -388,7 +398,7 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
         writeJson(response, 400, { error: { code: error_codes.invalid_request, message: "Expected Annotation wire contract." } });
         return;
       }
-      const upsert = await upsertMark(store, body);
+      const upsert = await upsertMark(store, body, bus);
       if (!upsert.ignored) await appendDaemonLog(store.home, "INFO", upsert.created ? "mark created" : "mark updated", { fields: logFieldsForMark(body) });
       writeJson(response, 200, { mark: toAgentMark(body) });
       return;
@@ -408,7 +418,7 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
       return;
     }
     if (request.method === "POST" && path.action === "resolve") {
-      const result = await resolveMark(store, args);
+      const result = await resolveMark(store, args, bus);
       if (result.kind === "ok") {
         await appendDaemonLog(store.home, "INFO", result.changed ? "mark resolved" : "mark resolve noop", { fields: logFieldsForMark(result.mark) });
         writeJson(response, 200, result.value);
@@ -419,7 +429,7 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
       return;
     }
     if (request.method === "DELETE" && path.action === undefined) {
-      const result = await deleteMark(store, args);
+      const result = await deleteMark(store, args, bus);
       if (result.kind === "ok") {
         await appendDaemonLog(store.home, "INFO", "mark deleted", { fields: logFieldsForMark(result.mark) });
         writeJson(response, 200, result.value);
@@ -434,6 +444,74 @@ async function handleMarks(request: IncomingMessage, response: ServerResponse, u
 
   await appendDaemonLog(store.home, "WARN", `unsupported ${request.method ?? "UNKNOWN"} ${url.pathname}`, { console });
   writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Unsupported marks operation." } });
+}
+
+async function handleMarkStream(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  store: MarkStore,
+  bus: MarkEventBus,
+  console?: Pick<NodeJS.WriteStream, "write">,
+): Promise<void> {
+  if (request.method !== "GET") {
+    writeJson(response, 405, { error: { code: error_codes.invalid_request, message: "Mark stream endpoint requires GET." } });
+    return;
+  }
+  const args = Object.fromEntries(url.searchParams);
+  const projectId = streamProjectId(args);
+  if (projectId === undefined) {
+    writeJson(response, 400, { error: { code: error_codes.scope_required, message: "Project scope is required." } });
+    return;
+  }
+
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+
+  const writeEvent = (event: MarkStreamEvent): void => {
+    response.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  // Initial snapshot so the client paints without a separate GET.
+  const snapshot = listMarks(store, args);
+  writeEvent({ type: "snapshot", marks: snapshot.kind === "ok" ? snapshot.value.marks : [] });
+
+  const unsubscribe = bus.subscribe(projectId, (change) => {
+    if (!streamScopeMatches(change.scope, args)) return;
+    if (change.type === "delete") writeEvent({ type: "delete", id: change.id });
+    else writeEvent({ type: change.type, mark: change.mark });
+  });
+
+  const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), STREAM_KEEPALIVE_MS);
+  if (typeof keepAlive.unref === "function") keepAlive.unref();
+
+  const cleanup = (): void => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  };
+  request.on("close", cleanup);
+  response.on("close", cleanup);
+  await appendDaemonLog(store.home, "INFO", "mark stream opened", { fields: { project: projectId, session: stringArg(args, "session_id") }, console });
+}
+
+function streamProjectId(args: Record<string, unknown>): string | undefined {
+  const projectId = stringArg(args, "project_id");
+  if (projectId !== undefined) return projectId;
+  const workspaceRootHash = stringArg(args, "workspace_root_hash");
+  if (workspaceRootHash !== undefined) return projectIdForWorkspaceRootHash(workspaceRootHash);
+  return undefined;
+}
+
+function streamScopeMatches(scope: MarkChangeScope, args: Record<string, unknown>): boolean {
+  return matchesOptional(scope.workspace_root_hash, args, "workspace_root_hash") &&
+    matchesOptional(scope.origin, args, "origin") &&
+    matchesOptional(scope.url, args, "url") &&
+    matchesOptional(scope.route_key, args, "route_key") &&
+    matchesOptional(scope.session_id, args, "session_id");
 }
 
 async function handleAnomalies(request: IncomingMessage, response: ServerResponse, url: URL, home: string, console?: Pick<NodeJS.WriteStream, "write">): Promise<void> {
@@ -496,7 +574,7 @@ function markPath(pathname: string): { id: string; action?: "resolve" } | undefi
   return undefined;
 }
 
-async function upsertMark(store: MarkStore, annotation: Annotation): Promise<{ created: boolean; ignored: boolean }> {
+async function upsertMark(store: MarkStore, annotation: Annotation, bus: MarkEventBus): Promise<{ created: boolean; ignored: boolean }> {
   const projectId = annotation.project.project_id;
   const sessionId = annotation.project.session_id;
   const project = (store.envelope.projects[projectId] ??= { sessions: {}, tombstones: [] });
@@ -507,7 +585,19 @@ async function upsertMark(store: MarkStore, annotation: Annotation): Promise<{ c
   if (created) session.marks.push(annotation);
   else session.marks[index] = annotation;
   await saveStore(store);
+  bus.publish({ type: "upsert", scope: scopeFromAnnotation(annotation), mark: toAgentMark(annotation) });
   return { created, ignored: false };
+}
+
+function scopeFromAnnotation(annotation: Annotation): MarkChangeScope {
+  return {
+    project_id: annotation.project.project_id,
+    workspace_root_hash: annotation.project.workspace_root_hash,
+    origin: annotation.project.origin,
+    url: annotation.project.url,
+    route_key: annotation.project.route_key,
+    session_id: annotation.project.session_id,
+  };
 }
 
 function listMarks(store: MarkStore, args: Record<string, unknown>): { kind: "ok"; value: ListMarksResponse } | { kind: "error"; error: { code: string; message: string; candidates?: ProjectScopeCandidate[] } } {
@@ -642,7 +732,7 @@ function assertionMatches(mark: Annotation, args: Record<string, unknown>): bool
   return scopeMatches(mark, args, projectId !== undefined);
 }
 
-async function resolveMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: ResolveMarkResponse; mark: Annotation; changed: boolean } | { kind: "error"; error: { code: string; message: string } }> {
+async function resolveMark(store: MarkStore, args: Record<string, unknown>, bus: MarkEventBus): Promise<{ kind: "ok"; value: ResolveMarkResponse; mark: Annotation; changed: boolean } | { kind: "error"; error: { code: string; message: string } }> {
   const result = findAssertedMark(store, args, "resolve");
   if (result.kind === "error") return result;
   if (result.mark.lifecycle.task_status === "resolved") return { kind: "ok", value: { ok: true, task_status: "resolved" }, mark: result.mark, changed: false };
@@ -651,10 +741,11 @@ async function resolveMark(store: MarkStore, args: Record<string, unknown>): Pro
   result.mark.lifecycle.updated_at = now;
   result.mark.lifecycle.task_resolved_at = now;
   await saveStore(store);
+  bus.publish({ type: "resolve", scope: scopeFromAnnotation(result.mark), mark: toAgentMark(result.mark) });
   return { kind: "ok", value: { ok: true, task_status: "resolved" }, mark: result.mark, changed: true };
 }
 
-async function deleteMark(store: MarkStore, args: Record<string, unknown>): Promise<{ kind: "ok"; value: DeleteMarkResponse; mark: Annotation } | { kind: "error"; error: { code: string; message: string } }> {
+async function deleteMark(store: MarkStore, args: Record<string, unknown>, bus: MarkEventBus): Promise<{ kind: "ok"; value: DeleteMarkResponse; mark: Annotation } | { kind: "error"; error: { code: string; message: string } }> {
   const result = findAssertedMark(store, args, "delete");
   if (result.kind === "error") return result;
   const deletedAt = new Date().toISOString();
@@ -667,6 +758,7 @@ async function deleteMark(store: MarkStore, args: Record<string, unknown>): Prom
   }
   if (!result.project.tombstones.includes(result.mark.id)) result.project.tombstones.push(result.mark.id);
   await saveStore(store);
+  bus.publish({ type: "delete", scope: scopeFromAnnotation(result.mark), id: result.mark.id });
   return { kind: "ok", value: { ok: true, deleted_at: deletedAt }, mark: result.mark };
 }
 

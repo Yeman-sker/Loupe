@@ -1356,6 +1356,188 @@ describe("Loupe Phase 0 CLI", () => {
   });
 });
 
+type StreamFrame = { type: string; [key: string]: unknown };
+
+class MarkStreamReader {
+  readonly events: StreamFrame[] = [];
+  private readonly waiters: Array<{ predicate: (frame: StreamFrame) => boolean; resolve: (frame: StreamFrame) => void }> = [];
+  private readonly controller = new AbortController();
+  private buffer = "";
+
+  constructor(private readonly baseUrl: string, private readonly token: string | undefined, private readonly query: Record<string, string>) {}
+
+  async open(): Promise<Response> {
+    const url = new URL(`${this.baseUrl}/v1/marks/stream`);
+    for (const [key, value] of Object.entries(this.query)) url.searchParams.set(key, value);
+    const headers = this.token === undefined ? {} : authHeaders(this.token);
+    const response = await fetch(url, { headers, signal: this.controller.signal });
+    if (response.status !== 200 || response.body === null) return response;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    void (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          this.buffer += decoder.decode(value, { stream: true });
+          this.drain();
+        }
+      } catch {
+        // Aborted by close(); ignore.
+      }
+    })();
+    return response;
+  }
+
+  private drain(): void {
+    let idx = this.buffer.indexOf("\n\n");
+    while (idx !== -1) {
+      const frame = this.buffer.slice(0, idx);
+      this.buffer = this.buffer.slice(idx + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const event = JSON.parse(line.slice(5).trim()) as StreamFrame;
+        this.events.push(event);
+        for (const waiter of this.waiters.splice(0)) {
+          if (waiter.predicate(event)) waiter.resolve(event);
+          else this.waiters.push(waiter);
+        }
+      }
+      idx = this.buffer.indexOf("\n\n");
+    }
+  }
+
+  waitFor(predicate: (frame: StreamFrame) => boolean, timeoutMs = 2000): Promise<StreamFrame> {
+    const existing = this.events.find(predicate);
+    if (existing !== undefined) return Promise.resolve(existing);
+    return new Promise<StreamFrame>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for stream event")), timeoutMs);
+      this.waiters.push({ predicate, resolve: (frame) => { clearTimeout(timer); resolve(frame); } });
+    });
+  }
+
+  close(): void {
+    this.controller.abort();
+  }
+}
+
+describe("Loupe mark stream (SSE push)", () => {
+  const token = "stream-test-token";
+  let server: LoupeHttpServer;
+  let home = "";
+  let baseUrl = "";
+
+  before(async () => {
+    home = await mkdtemp(join(tmpdir(), "loupe-stream-"));
+    server = createServer({ home, port: 0, token, version: "stream-test" });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("rejects an unauthenticated stream", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks/stream?project_id=stream-noauth`, { headers: { origin: "https://example.test" } });
+    assert.equal(response.status, 401);
+    await response.body?.cancel();
+  });
+
+  it("requires a project scope", async () => {
+    const response = await fetch(`${baseUrl}/v1/marks/stream`, { headers: authHeaders(token) });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error.code, error_codes.scope_required);
+  });
+
+  it("pushes snapshot, then upsert/resolve/delete frames to a scoped subscriber", async () => {
+    const project_id = "stream-project-a";
+    const session_id = "stream-session-a";
+    const reader = new MarkStreamReader(baseUrl, token, { project_id, session_id });
+    try {
+      await reader.open();
+      const snapshot = await reader.waitFor((frame) => frame.type === "snapshot");
+      assert.deepEqual(snapshot.marks, []);
+
+      const annotation = sampleAnnotation({ id: "stream-mark-1", project_id, session_id });
+      await assertOk(await postMark(baseUrl, token, annotation));
+      const upsert = await reader.waitFor((frame) => frame.type === "upsert");
+      assert.equal((upsert.mark as AgentMark).id, "stream-mark-1");
+      assert.ok(is_agent_mark(upsert.mark));
+
+      const resolveResponse = await fetch(`${baseUrl}/v1/marks/${annotation.id}/resolve?project_id=${project_id}`, { method: "POST", headers: authHeaders(token) });
+      await assertOk(resolveResponse);
+      const resolved = await reader.waitFor((frame) => frame.type === "resolve");
+      assert.equal((resolved.mark as AgentMark).lifecycle.task_status, "resolved");
+
+      const deleteResponse = await fetch(`${baseUrl}/v1/marks/${annotation.id}?project_id=${project_id}`, { method: "DELETE", headers: authHeaders(token) });
+      await assertOk(deleteResponse);
+      const deleted = await reader.waitFor((frame) => frame.type === "delete");
+      assert.equal(deleted.id, "stream-mark-1");
+    } finally {
+      reader.close();
+    }
+  });
+
+  it("filters frames by session scope within the same project", async () => {
+    const project_id = "stream-project-shared";
+    const session_id = "stream-session-keep";
+    const reader = new MarkStreamReader(baseUrl, token, { project_id, session_id });
+    try {
+      await reader.open();
+      await reader.waitFor((frame) => frame.type === "snapshot");
+
+      // A mark in a different session of the same project must not reach this subscriber.
+      const otherSession = sampleAnnotation({ id: "stream-other-session", project_id, session_id: "stream-session-other" });
+      await assertOk(await postMark(baseUrl, token, otherSession));
+
+      // A mark in the subscribed session must reach it.
+      const ownSession = sampleAnnotation({ id: "stream-own-session", project_id, session_id });
+      await assertOk(await postMark(baseUrl, token, ownSession));
+
+      const received = await reader.waitFor((frame) => frame.type === "upsert");
+      assert.equal((received.mark as AgentMark).id, "stream-own-session");
+      assert.equal(reader.events.some((frame) => frame.type === "upsert" && (frame.mark as AgentMark).id === "stream-other-session"), false);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it("unsubscribes on client disconnect without breaking later mutations", async () => {
+    const project_id = "stream-project-disconnect";
+    const session_id = "stream-session-disconnect";
+    const first = new MarkStreamReader(baseUrl, token, { project_id, session_id });
+    await first.open();
+    await first.waitFor((frame) => frame.type === "snapshot");
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Mutating after the only subscriber left must not throw on a dead socket.
+    const annotation = sampleAnnotation({ id: "stream-after-disconnect", project_id, session_id });
+    await assertOk(await postMark(baseUrl, token, annotation));
+    assert.equal((await fetch(`${baseUrl}/health`).then((response) => response.json())).ok, true);
+
+    // A fresh subscriber still works and sees the persisted mark in its snapshot.
+    const second = new MarkStreamReader(baseUrl, token, { project_id, session_id });
+    try {
+      await second.open();
+      const snapshot = await second.waitFor((frame) => frame.type === "snapshot");
+      assert.equal((snapshot.marks as AgentMark[]).some((mark) => mark.id === "stream-after-disconnect"), true);
+    } finally {
+      second.close();
+    }
+  });
+});
+
 function isNodeErrorCode(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
 }

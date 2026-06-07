@@ -373,4 +373,5 @@ Locator 保存多证据 bundle，而不是只保存 selector。Primary selector 
 
 ## Status
 
-Accepted
+Accepted（部分被 `adp-20260607` 取代：真相源由 `chrome.storage.local` 改为 daemon 权威，
+并新增 daemon→extension SSE 推送；本 ADP 其余决策仍然有效。）

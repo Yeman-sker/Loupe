@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decide_origin_authorization, handle_service_worker_wake, pair_daemon, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization } from "./background.js";
+import { connect_mark_stream, decide_origin_authorization, handle_service_worker_wake, pair_daemon, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization, type MarkStreamPort } from "./background.js";
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {
@@ -551,5 +551,111 @@ describe("background service worker wake", () => {
     assert.equal(stored_mark?.sync.status, "failed");
     assert.equal(stored_mark?.sync.retry_count, 2);
     assert.equal(stored_mark?.intent.comment, "newer local");
+  });
+});
+
+type FakePort = MarkStreamPort & { sent: unknown[]; emit: (message: unknown) => void; disconnect: () => void };
+
+function fakeStreamPort(name: string): FakePort {
+  let onMessage: ((message: unknown) => void) | undefined;
+  let onDisconnect: (() => void) | undefined;
+  const sent: unknown[] = [];
+  return {
+    name,
+    sent,
+    postMessage: (message) => sent.push(message),
+    onMessage: { addListener: (cb) => { onMessage = cb; } },
+    onDisconnect: { addListener: (cb) => { onDisconnect = cb; } },
+    emit: (message) => onMessage?.(message),
+    disconnect: () => onDisconnect?.(),
+  };
+}
+
+function streamMark(id: string, overrides: { task_status?: string; comment?: string } = {}): Record<string, unknown> {
+  return {
+    id,
+    project: { project_id: "p1", workspace_root_hash: "wh", origin: "http://localhost:5173", url: "http://localhost:5173/", route_key: "/", session_id: "s1" },
+    target: { selector: `#${id}`, tag: "button", locator_status: "resolved", confidence: 1, matched_by: ["primary"] },
+    intent: { comment: overrides.comment ?? `mark ${id}`, kind: "question" },
+    media: { has_screenshot: false },
+    lifecycle: { task_status: overrides.task_status ?? "open", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" },
+  };
+}
+
+function sseFrames(events: unknown[]): string {
+  return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+}
+
+describe("Loupe SW mark stream relay", () => {
+  it("reconciles snapshot/upsert/resolve/delete into the cache and relays token-free frames", async () => {
+    const marks_key = "loupe:v1:project:p1:session:s1:marks";
+    const store: Record<string, unknown> = {
+      "loupe:v1:daemon": { base_url: "http://127.0.0.1:7373", token: "stream-token", paired_at: "2026-01-01T00:00:00.000Z" },
+    };
+    const storage = {
+      get: async (key: string) => ({ [key]: store[key] }),
+      set: async (items: Record<string, unknown>) => void Object.assign(store, items),
+    };
+
+    const frames = sseFrames([
+      { type: "snapshot", marks: [streamMark("a")] },
+      { type: "upsert", mark: streamMark("b") },
+      { type: "resolve", mark: streamMark("a", { task_status: "resolved" }) },
+      { type: "delete", id: "b" },
+    ]);
+
+    const port = fakeStreamPort("loupe.mark_stream");
+    const requests: { url: string; auth: string | undefined }[] = [];
+    let calls = 0;
+    const idle = new Promise<void>((resolve) => {
+      connect_mark_stream(port, storage, () => "2026-01-01T00:00:05.000Z", {
+        backoff_ms: () => 0,
+        on_idle: resolve,
+        fetch_like: async (url, init) => {
+          calls += 1;
+          requests.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.authorization });
+          if (calls === 1) return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+          // Second connect attempt: simulate the tab closing, then fail.
+          port.disconnect();
+          throw new Error("stop");
+        },
+      });
+    });
+
+    port.emit({ type: "subscribe", scope: { project_id: "p1", session_id: "s1", workspace_root_hash: "wh", origin: "http://localhost:5173", url: "http://localhost:5173/", route_key: "/" } });
+    await idle;
+
+    // Authenticated stream request carried the Bearer token (held only by the SW).
+    assert.match(requests[0]!.url, /\/v1\/marks\/stream\?/);
+    assert.equal(requests[0]!.auth, "Bearer stream-token");
+
+    // Cache reconciled: a present + resolved, b deleted.
+    const cached = store[marks_key] as Array<{ id: string; lifecycle: { task_status: string }; sync: { status: string } }>;
+    assert.equal(cached.length, 1);
+    assert.equal(cached[0]!.id, "a");
+    assert.equal(cached[0]!.lifecycle.task_status, "resolved");
+    assert.equal(cached[0]!.sync.status, "synced");
+    const tombstones = store["loupe:v1:project:p1:tombstones"] as string[];
+    assert.equal(tombstones.includes("b"), true);
+
+    // Relayed frames are the raw token-free change events.
+    const types = port.sent.map((message) => (message as { type: string }).type);
+    assert.deepEqual(types.filter((type) => type === "snapshot" || type === "upsert" || type === "resolve" || type === "delete"), ["snapshot", "upsert", "resolve", "delete"]);
+    assert.equal(port.sent.some((message) => JSON.stringify(message).includes("stream-token")), false);
+  });
+
+  it("reports unpaired and idles when no daemon credentials are stored", async () => {
+    const store: Record<string, unknown> = {};
+    const storage = {
+      get: async (key: string) => ({ [key]: store[key] }),
+      set: async (items: Record<string, unknown>) => void Object.assign(store, items),
+    };
+    const port = fakeStreamPort("loupe.mark_stream");
+    const idle = new Promise<void>((resolve) => {
+      connect_mark_stream(port, storage, () => "2026-01-01T00:00:05.000Z", { on_idle: resolve, fetch_like: async () => new Response("", { status: 200 }) });
+    });
+    port.emit({ type: "subscribe", scope: { project_id: "p1", session_id: "s1" } });
+    await idle;
+    assert.deepEqual(port.sent, [{ type: "stream_status", status: "unpaired" }]);
   });
 });

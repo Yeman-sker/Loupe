@@ -12,6 +12,7 @@ const LOUPE_DAEMON_STORAGE_KEY = "loupe:v1:daemon";
 const LOUPE_DAEMON_BASE_URL = "http://127.0.0.1:7373";
 const LOUPE_DAEMON_PAIRING_PATH = "/v1/extension-pairing";
 const LOUPE_DAEMON_NAME = "loupe";
+const MARK_STREAM_PORT_NAME = "loupe.mark_stream";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.session.set({
@@ -159,6 +160,137 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+// Live daemon → page push. The SW owns the token and the SSE connection; the
+// page opens a Port and only receives token-free change frames. A connected Port
+// keeps the SW alive while a dev tab is open, and lets it idle when none.
+chrome.runtime.onConnect?.addListener((port) => {
+  if (port.name === MARK_STREAM_PORT_NAME) connectMarkStream(port);
+});
+
+function connectMarkStream(port) {
+  let scope;
+  let started = false;
+  let closed = false;
+  let controller;
+  const backoffMs = (attempt) => Math.min(1000 * 2 ** attempt, 30000);
+
+  port.onDisconnect.addListener(() => {
+    closed = true;
+    if (controller) controller.abort();
+  });
+
+  port.onMessage.addListener((message) => {
+    if (started) return;
+    const next = wakeScope(message);
+    if (next === undefined) return;
+    scope = next;
+    started = true;
+    void run();
+  });
+
+  async function run() {
+    const daemon = await storedDaemon();
+    if (daemon === null || scope === undefined) {
+      if (!closed) port.postMessage({ type: "stream_status", status: "unpaired" });
+      return;
+    }
+    const marksKey = sessionMarksKey(scope.project_id, scope.session_id);
+    let attempt = 0;
+    while (!closed) {
+      controller = new AbortController();
+      let opened = false;
+      try {
+        const response = await fetch(markStreamUrl(daemon.base_url, scope), { headers: authorizedHeaders(daemon.token), signal: controller.signal });
+        if (!response.ok || response.body === null) throw new Error(`GET /v1/marks/stream failed with ${response.status}`);
+        opened = true;
+        attempt = 0;
+        port.postMessage({ type: "stream_status", status: "open" });
+        await pumpEventStream(response.body, async (event) => {
+          await applyStreamEvent(marksKey, scope, event);
+          port.postMessage(event);
+        });
+      } catch (_e) {
+        // Network / abort / stream end; reconnect unless the Port closed.
+      }
+      if (closed) break;
+      if (opened) port.postMessage({ type: "stream_status", status: "reconnecting" });
+      await delay(backoffMs(attempt));
+      attempt += 1;
+    }
+  }
+}
+
+async function pumpEventStream(body, onEvent) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx = buffer.indexOf("\n\n");
+    while (idx !== -1) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const event = parseStreamEvent(line.slice(5).trim());
+        if (event !== undefined) await onEvent(event);
+      }
+      idx = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+function parseStreamEvent(data) {
+  let value;
+  try {
+    value = JSON.parse(data);
+  } catch (_e) {
+    return undefined;
+  }
+  if (!isObject(value)) return undefined;
+  if (value.type === "snapshot") return Array.isArray(value.marks) ? { type: "snapshot", marks: value.marks.filter(isObject) } : undefined;
+  if (value.type === "upsert" || value.type === "resolve") return isObject(value.mark) ? { type: value.type, mark: value.mark } : undefined;
+  if (value.type === "delete") return typeof value.id === "string" ? { type: "delete", id: value.id } : undefined;
+  return undefined;
+}
+
+async function applyStreamEvent(marksKey, scope, event) {
+  if (event.type === "snapshot") {
+    await reconcileDaemonMarks(marksKey, scope, event.marks);
+    return;
+  }
+  if (event.type === "delete") {
+    const existing = await readStoredMark(marksKey, event.id);
+    if (existing !== undefined) await deleteStoredMark(marksKey, existing);
+    return;
+  }
+  const daemonMark = event.mark;
+  if (!isDaemonMarkForScope(daemonMark, scope)) return;
+  const local = await readStoredMark(marksKey, daemonMark.id);
+  if (local !== undefined && shouldPreserveUnsyncedLocal(local, daemonMark)) return;
+  const next = local === undefined ? annotationFromDaemonMark(daemonMark) : reconcileLocalMark(local, daemonMark);
+  const now = new Date().toISOString();
+  await replaceStoredMark(marksKey, { ...next, sync: { status: "synced", retry_count: (next.sync && next.sync.retry_count) || 0, last_synced_at: now } });
+}
+
+function markStreamUrl(baseUrl, scope) {
+  const url = new URL(joinDaemonUrl(baseUrl, "/v1/marks/stream"));
+  appendParam(url, "project_id", scope.project_id);
+  appendParam(url, "workspace_root_hash", scope.workspace_root_hash);
+  appendParam(url, "branch", scope.branch);
+  appendParam(url, "origin", scope.origin);
+  appendParam(url, "url", scope.url);
+  appendParam(url, "route_key", scope.route_key);
+  appendParam(url, "session_id", scope.session_id);
+  return url.href;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
 
 async function handleGetOriginAuth(message, sender) {
   const origin = originFromMessageOrSender(message, sender);

@@ -5,8 +5,8 @@ Loupe turns a user-selected DOM element on a local development page into a struc
 ## Language
 
 **Local daemon**:
-A local Loupe service that brokers browser and agent access to marks across one or more projects. It is not itself a project identity.
-_Avoid_: Project daemon, workspace-bound daemon
+A local Loupe service that brokers browser and agent access to marks across one or more projects, and holds the authoritative copy of mark state. The browser is a client that caches and subscribes; it is not a competing source of truth. The daemon is not itself a project identity.
+_Avoid_: Project daemon, workspace-bound daemon, browser mirror
 
 **Project**:
 A code workspace scope that owns marks and agent actions. Project identity is distinct from browser origin, route, and daemon process identity.
@@ -30,5 +30,5 @@ The visual treatment associated with an intent kind. It helps users distinguish 
 _Avoid_: Category color only
 
 **Pin**:
-The in-page visual marker for a saved mark. A pin is anchored to its live DOM element and tracks that element's current viewport position; it is not a static marker placed at save-time coordinates. When the element can no longer be located, the pin freezes and reflects drifted/lost rather than following a wrong target.
+The in-page visual marker for a saved mark. A pin is anchored to its live DOM element and tracks that element's current viewport position; it is not a static marker placed at save-time coordinates. When the element can no longer be located, the pin freezes and reflects drifted/lost rather than following a wrong target. A pin's task state (open/resolved) reflects pushed daemon truth, rendered from a local cache between pushes, so an open page silently converges on the daemon without user action.
 _Avoid_: Marker, dot, badge

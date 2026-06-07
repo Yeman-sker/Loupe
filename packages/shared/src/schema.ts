@@ -169,6 +169,17 @@ export type ListMarksResponse = {
   marks: AgentMark[];
 };
 
+/**
+ * Wire frames pushed daemon → extension over the `/v1/marks/stream` SSE channel.
+ * The stream is already project/session scoped at subscribe time, so individual
+ * frames carry only the payload, not scope. `snapshot` is sent once on connect.
+ */
+export type MarkStreamEvent =
+  | { type: "snapshot"; marks: AgentMark[] }
+  | { type: "upsert"; mark: AgentMark }
+  | { type: "resolve"; mark: AgentMark }
+  | { type: "delete"; id: string };
+
 export type GetMarkRequest = {
   id: string;
 } & ProjectScopeInput;
@@ -290,6 +301,21 @@ export function is_annotation(value: unknown): value is Annotation {
 
 export function assert_annotation(value: unknown): asserts value is Annotation {
   if (!is_annotation(value)) throw new TypeError("Expected Annotation wire contract");
+}
+
+export function is_mark_stream_event(value: unknown): value is MarkStreamEvent {
+  if (!is_record(value)) return false;
+  switch (value.type) {
+    case "snapshot":
+      return Array.isArray(value.marks) && value.marks.every(is_agent_mark);
+    case "upsert":
+    case "resolve":
+      return is_agent_mark(value.mark);
+    case "delete":
+      return typeof value.id === "string";
+    default:
+      return false;
+  }
 }
 
 const storage_envelope_keys: ReadonlySet<string> = new Set(["schema_version", "projects"]);

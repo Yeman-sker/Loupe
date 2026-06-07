@@ -33,7 +33,7 @@ import { renderFallback } from "../surfaces/fallback.js";
 import { renderHostAuth } from "../surfaces/host-auth.js";
 import { renderStatusBar, type StatusModel } from "../surfaces/status-bar.js";
 import { annotationToPinRecord, buildContext, rawToProjectEntry, type ProjectEntry } from "./pin-model.js";
-import { extensionRuntime, isAuthorizedResponse, runtimeMessage } from "./runtime-bridge.js";
+import { connectRuntimePort, extensionRuntime, isAuthorizedResponse, runtimeMessage, type RuntimePort } from "./runtime-bridge.js";
 import { readPrefs } from "./prefs.js";
 
 const PROJECT_ONBOARDING_PREFIX = "loupe:v1:project-onboarding";
@@ -476,6 +476,7 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
   let detachHostAuth: (() => void) | null = null;
   let detachStatusBar: (() => void) | null = null;
   let prevIntentFocus: Element | null = null;
+  let markStreamPort: RuntimePort | null = null;
 
   // Window used for rAF-based anchor tracking (pin layer + element-anchored
   // surfaces). Same fallback the pin layer uses.
@@ -1138,6 +1139,86 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     return isRecord(value) && typeof value.project_id === "string" && typeof value.workspace_root_hash === "string";
   }
 
+  // Live daemon → page push. The service worker owns the token and the SSE
+  // connection; here we only receive token-free change frames over a Port and
+  // diff-apply them so an open page silently reflects daemon truth (an agent
+  // resolving a mark, another tab editing) without disturbing the user.
+  function subscribeMarkStream(scope: Annotation["project"]): void {
+    if (opts.storage === undefined) return;
+    const port = connectRuntimePort("loupe.mark_stream");
+    if (port === undefined) return;
+    markStreamPort = port;
+    port.onDisconnect.addListener(() => { if (markStreamPort === port) markStreamPort = null; });
+    port.onMessage.addListener((message) => { if (isRecord(message)) void applyStreamChange(message); });
+    port.postMessage({ type: "subscribe", scope });
+  }
+
+  async function applyStreamChange(change: Record<string, unknown>): Promise<void> {
+    const type = change.type;
+    if (type === "stream_status") {
+      // Transient-silent: only a positive "open" clears a stale fallback; we never
+      // surface reconnecting/unpaired on the page (sustained absence onboards elsewhere).
+      if (change.status === "open") { state.daemonOnline = true; state.showFallback = false; render(); }
+      return;
+    }
+    if (type === "delete") {
+      const id = change.id;
+      if (typeof id !== "string" || !state.pins.some((p) => p.id === id)) return;
+      state.pins = state.pins.filter((p) => p.id !== id);
+      annotations.delete(id);
+      if (state.openDetail === id) state.openDetail = null;
+      render();
+      return;
+    }
+    if (type === "snapshot") {
+      const marks = Array.isArray(change.marks) ? change.marks : [];
+      for (const mark of marks) if (isRecord(mark)) await applyMarkUpdate(mark, true);
+      render();
+      return;
+    }
+    if (type === "upsert" || type === "resolve") {
+      if (isRecord(change.mark)) { await applyMarkUpdate(change.mark, type === "upsert"); render(); }
+    }
+  }
+
+  async function applyMarkUpdate(mark: Record<string, unknown>, place: boolean): Promise<void> {
+    const id = mark.id;
+    if (typeof id !== "string") return;
+    const lifecycle = isRecord(mark.lifecycle) ? mark.lifecycle : {};
+    const intent = isRecord(mark.intent) ? mark.intent : {};
+    const resolved = lifecycle.task_status === "resolved";
+    const pin = state.pins.find((p) => p.id === id);
+    if (pin !== undefined) {
+      pin.task = resolved ? "done" : "open";
+      pin.sync = "synced";
+      if (typeof intent.comment === "string") pin.comment = intent.comment;
+      const ann = annotations.get(id);
+      if (ann !== undefined && resolved && ann.lifecycle.task_status !== "resolved") {
+        const at = typeof lifecycle.updated_at === "string" ? lifecycle.updated_at : new Date().toISOString();
+        annotations.set(id, resolve_annotation(ann, at));
+      }
+      return;
+    }
+    if (!place) return;
+    await placePinFromCache(id);
+  }
+
+  // A mark created in another tab: the SW already wrote the full Annotation into
+  // the chrome.storage.local cache, so we read it back and place a pin.
+  async function placePinFromCache(id: string): Promise<void> {
+    if (opts.storage === undefined || annotations.has(id)) return;
+    const scope = project_scope_from_url(scopeInputForCurrentPage());
+    const key = session_marks_key(scope.project_id, scope.session_id);
+    const stored = await opts.storage.get(key).catch(() => ({} as Record<string, unknown>));
+    const arr = stored[key];
+    if (!Array.isArray(arr) || annotations.has(id)) return;
+    const ann = (arr as Annotation[]).find((m) => m.id === id);
+    if (ann === undefined || ann.lifecycle?.task_status === "archived") return;
+    annotations.set(id, ann);
+    state.markCount += 1;
+    state.pins.push(annotationToPinRecord(ann, state.markCount, opts.document));
+  }
+
   instrumentation?.attach?.({
     document: opts.document,
     getCurrentTarget: () => state.intent?.element ?? state.hover?.element ?? lastPinElement() ?? (opts.document.activeElement instanceof Element ? opts.document.activeElement : null),
@@ -1168,6 +1249,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
       instrumentation?.detach?.();
       opts.document.removeEventListener("keydown", onGlobalKey);
       win?.removeEventListener("resize", render);
+      markStreamPort?.disconnect();
+      markStreamPort = null;
       clearSurfaces();
       pinLayer.unmount();
       host.destroy();
@@ -1194,6 +1277,8 @@ export async function mount(opts: MountOptions): Promise<SurfaceApp> {
     // Load existing annotations for the current session
     await refreshDaemonProjectIdentity();
     const scope = project_scope_from_url(scopeInputForCurrentPage());
+    // Subscribe to live daemon push for this scope (SW-owned stream, token-free relay).
+    subscribeMarkStream(scope);
     const marksKey = session_marks_key(scope.project_id, scope.session_id);
     const marksStored = await opts.storage.get(marksKey).catch(() => ({} as Record<string, unknown>));
     const marksRaw = (marksStored as Record<string, unknown>)[marksKey];
