@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { connect_mark_stream, decide_origin_authorization, handle_service_worker_wake, pair_daemon, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization, type MarkStreamPort } from "./background.js";
+import { connect_mark_stream, decide_origin_authorization, handle_mark_mutation, handle_service_worker_wake, pair_daemon, request_active_tab_origin_authorization, request_current_tab_origin_authorization, request_origin_authorization, type MarkStreamPort } from "./background.js";
 
 describe("background origin authorization", () => {
   it("returns denied authorization result when permission request is declined", async () => {
@@ -551,6 +551,81 @@ describe("background service worker wake", () => {
     assert.equal(stored_mark?.sync.status, "failed");
     assert.equal(stored_mark?.sync.retry_count, 2);
     assert.equal(stored_mark?.intent.comment, "newer local");
+  });
+});
+
+describe("background page mark mutation", () => {
+  const scope = { project_id: "project-1", workspace_root_hash: "workspace-root-hash", origin: "https://app.example.test", url: "https://app.example.test/dashboard", route_key: "/dashboard", session_id: "session-1" };
+  const key = "loupe:v1:project:project-1:session:session-1:marks";
+
+  function makeLocal(store: Record<string, unknown>): { get: (k: unknown) => Promise<Record<string, unknown>>; set: (items: Record<string, unknown>) => Promise<void> } {
+    return {
+      get: async (requested_key) => (typeof requested_key === "string" ? { [requested_key]: store[requested_key] } : { ...store }),
+      set: async (items) => void Object.assign(store, items),
+    };
+  }
+
+  it("resolves a page mark on the daemon with a Bearer token and marks the cache synced", async () => {
+    const local_mark = { id: "mark-1", project: scope, lifecycle: { task_status: "resolved", updated_at: "2026-01-01T00:00:01.000Z" }, sync: { status: "synced", retry_count: 0 } };
+    const store: Record<string, unknown> = { [key]: [local_mark], "loupe:v1:daemon": { base_url: "http://127.0.0.1:7373", token: "secret-token", paired_at: "2026-01-01T00:00:00.000Z" } };
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+
+    const result = await handle_mark_mutation(
+      makeLocal(store),
+      { type: "loupe.mark.resolve", id: "mark-1", scope },
+      "resolve",
+      "2026-01-01T00:00:02.000Z",
+      async (url, init) => {
+        requests.push({ url: String(url), init });
+        return new Response("{}", { status: 200 });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, resolved: true });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/marks/mark-1/resolve?project_id=project-1&workspace_root_hash=workspace-root-hash&origin=https%3A%2F%2Fapp.example.test&url=https%3A%2F%2Fapp.example.test%2Fdashboard&route_key=%2Fdashboard&session_id=session-1");
+    assert.equal(requests[0]?.init?.method, "POST");
+    assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
+    assert.equal((store[key] as Array<{ sync: { status: string } }>)[0]?.sync.status, "synced");
+  });
+
+  it("deletes a page mark on the daemon and tombstones it locally", async () => {
+    const store: Record<string, unknown> = { [key]: [], "loupe:v1:daemon": { base_url: "http://127.0.0.1:7373", token: "secret-token", paired_at: "2026-01-01T00:00:00.000Z" } };
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+
+    const result = await handle_mark_mutation(
+      makeLocal(store),
+      { type: "loupe.mark.delete", id: "mark-1", scope },
+      "delete",
+      "2026-01-01T00:00:02.000Z",
+      async (url, init) => {
+        requests.push({ url: String(url), init });
+        return new Response("{}", { status: 200 });
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, deleted: true });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, "http://127.0.0.1:7373/v1/marks/mark-1?project_id=project-1&workspace_root_hash=workspace-root-hash&origin=https%3A%2F%2Fapp.example.test&url=https%3A%2F%2Fapp.example.test%2Fdashboard&route_key=%2Fdashboard&session_id=session-1");
+    assert.equal(requests[0]?.init?.method, "DELETE");
+    assert.equal((requests[0]?.init?.headers as Record<string, string>).authorization, "Bearer secret-token");
+    assert.deepEqual(store["loupe:v1:project:project-1:tombstones"], ["mark-1"]);
+  });
+
+  it("reports token_missing without fetching when no daemon is paired", async () => {
+    const store: Record<string, unknown> = { [key]: [] };
+
+    const result = await handle_mark_mutation(
+      makeLocal(store),
+      { type: "loupe.mark.resolve", id: "mark-1", scope },
+      "resolve",
+      "2026-01-01T00:00:02.000Z",
+      async () => {
+        throw new Error("fetch should not be called without daemon credentials");
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, token_missing: true });
   });
 });
 
