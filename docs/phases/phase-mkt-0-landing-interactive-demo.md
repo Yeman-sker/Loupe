@@ -4,11 +4,13 @@
 
 ## 阶段目标
 
-- **沙盒即 hero。** 首屏 above the fold 即可交互：左侧极简标题 + install widget，右侧一块作用域锁死的 mock host UI；鼠标划过元素，**Selection frame**（iris hue 286 角括号 + mono dimension readout + 语义 label tab）当场形变锚定。访客 3 秒内摸到手感。
+- **Hero 看，Demo 摸（精细化改版，推翻原决策 #7）。** 首屏 hero 不再承载交互沙盒：左侧极简标题 + install widget，右侧一块**循环品牌动画**——点阵粒子从混沌漂浮 → 被扫描捕中 → 凝聚对齐成 **Selection frame**（iris hue 286 角括号 + mono dimension readout）→ 消散重来；动画里子与产品核心动作「从混沌 DOM 中精准锁定一个元素」同构。Hero 占 ~90vh。可交互沙盒下移为**独立第二屏满宽**（访客滚一屏即上手），数据流（沙盒生成 mark → Agent 侧读取）仍靠 context 串联。
 - **演完整信任闭环、拆成上下两幕。** Hero（第一幕·浏览器侧）演到 `pick → intent input → 写一句意图 → ⌘↵ → 框 collapse 成 pin`；向下滚，刚生成的那条 mark 数据无缝流入第二幕（Agent 侧）的仿终端，显示 `list_marks` 读到的低噪声 AgentMark payload（PRD §11.1 shape），pin 翻成 `done ✓`。**闭环在第二幕合上。** 只走 happy path，不演 drifted/lost。
 - **诚实的三件套安装。** install widget 视觉照抄 opencode 式（包管理器 tab + 复制按钮），内容为 daemon `@loupe-server/server` 的 `npm / npx / pnpm / bun`（brew 待 formula）；外层用 **Step 1（daemon）/ Step 2（Chrome 扩展）/ Step 3（Claude 插件）** 的真实结构呈现，未发布的扩展/插件标 Coming soon 或给手动/unpacked 链接。**不伪装成单行 `curl|bash` 一键装。**
 - **品牌一致。** 只共享 `loupe-tokens.css` 作为唯一真相源；Selection frame / intent input / pin / 仿终端按落地页语境**重写**，以 `docs/ui-ux/prototypes` 的 JSX/CSS 当像素与动效蓝图。默认 dark "Instrument"，带主题开关；默认英文，单一开关同步切外壳与沙盒，技术术语恒英文。
-- **6 段叙事弧。** Hero（浏览器侧） → Agent 侧合环 → 有损翻译痛点（PRD §1.1 对比） → 为何可信（多证据定位+显式 drifted/lost、project/session 隔离、本地优先 token 安全；PRD §17.1） → Install Step 1/2/3 → Footer（GitHub 主 CTA + waitlist 次 + 主题/语言开关）。
+- **7 段叙事弧（改版后）。** Hero（品牌动画） → Demo（可交互沙盒，独立一屏） → Agent 侧合环 → 有损翻译痛点（PRD §1.1 对比） → 为何可信（多证据定位+显式 drifted/lost、project/session 隔离、本地优先 token 安全；PRD §17.1） → Install Step 1/2/3 → Footer（GitHub 主 CTA + waitlist 次 + 主题/语言开关）。
+
+- **全页微弱格子背景。** 整页底层铺一层极微弱 hairline 格子（编程/精密质感），但**沙盒舱体处挑空**（不透明遮住全页格子），避免与沙盒自带网格、host 内部栅格三层叠加「格子套格子」。全页格仅作环境质感，不与产品航拍网格争夺视觉。
 
 ## 验收标准
 
@@ -50,12 +52,19 @@
 | 4 | 代码复用 | 只共享 `loupe-tokens.css`；表面重写，prototype 当蓝图；不耦合扩展运行时 |
 | 5 | 技术栈/位置 | `packages/landing`，Next.js + Vercel；沙盒 `"use client"` island，其余 SSG |
 | 6 | 主 CTA / 安装 | GitHub 主 + waitlist 次；install widget = daemon 包管理器 tab，外套 Step 1/2/3 诚实结构 |
-| 7 | 沙盒位置 | 沙盒即 hero，above the fold |
+| 7 | 沙盒位置 | ~~沙盒即 hero，above the fold~~ **改版推翻**：Hero 右侧为品牌动画，沙盒下移为独立第二屏满宽 |
+| 11 | Hero 动画 | 循环品牌动画 = 点阵/点阵粒子 **凝聚成 Selection frame**（混沌漂浮→扫描捕中→对齐成框→消散重来）；非 8-bit pixel-art、非 logo 拼字、非纯装饰点阵场 |
+| 12 | 动画实现 | Canvas 2D 手写 rAF 粒子（不引重库，首屏 JS 增量 <10kB，仅视口内可见时跑）；`prefers-reduced-motion` 时冻结为一帧静态「已凝聚的选框」 |
+| 13 | iris 用量 | 点阵默认中性色；iris 仅在「扫描捕中→凝聚成框」一刻点亮，守住「无满屏品牌紫」铁律 |
+| 14 | 全页格子 | 全页底层铺极微弱 hairline 格子；沙盒舱体处挑空，避免格子套格子 |
+| 15 | 首屏高度 | Hero ~90vh（动画够大够惊艳，底部留下滚提示）；Demo 沙盒满宽独立一屏 |
 | 8 | 语言 | 默认英文 + 单一开关同步切中文；技术术语恒英文 |
 | 9 | 主题 | 默认 dark "Instrument"，带开关；主题+语言开关并排顶栏右上 |
-| 10 | 叙事弧 | 闭环拆两幕，6 段：Hero → Agent 合环 → 痛点 → 为何可信 → Install → Footer |
+| 10 | 叙事弧 | ~~6 段~~ **改版为 7 段**：Hero（动画）→ Demo（沙盒）→ Agent 合环 → 痛点 → 为何可信 → Install → Footer |
 
 > install 诚实性（不伪装单行一键装）编码了产品"绝不假装"第一原则；理由留在本文档与落地页 install section 文案/代码注释中，按 AGENTS.md 不另写 ADP（易回滚，三条件缺 hard-to-reverse）。
+
+> **改版说明（推翻 #7 → 新增 #11–#15）。** 原赌注「沙盒即 hero、3 秒摸到手感」放弃，因为 demo 挤在标题右侧空间太小、演示效果差。改为：Hero 用一段循环品牌动画（点阵凝聚成 Selection frame）抓注意力，沙盒下移为独立满宽一屏让访客充分上手。此为落地页布局调整，易回滚、不触及产品运行路径，按 AGENTS.md 三条件（缺 hard-to-reverse）不写 ADP，结论留在本决策表。
 
 ## 当前状态
 

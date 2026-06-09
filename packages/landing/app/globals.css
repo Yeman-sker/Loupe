@@ -30,7 +30,19 @@ body {
 .mono { font-family: var(--mono); font-feature-settings: "ss01", "ss02"; letter-spacing: 0; }
 a { color: inherit; }
 
-.page { max-width: var(--maxw); margin: 0 auto; padding: 0 28px 80px; }
+.page { position: relative; z-index: 1; max-width: var(--maxw); margin: 0 auto; padding: 0 28px 80px; }
+
+/* faint full-page grid — a programming/instrument substrate behind everything.
+   The sandbox cabin is opaque, so it punches a hole here (no grid-on-grid). */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 34px 34px;
+  -webkit-mask-image: radial-gradient(125% 115% at 50% 28%, #000 52%, transparent 100%);
+          mask-image: radial-gradient(125% 115% at 50% 28%, #000 52%, transparent 100%);
+}
 
 /* ---- shared bits --------------------------------------------------------- */
 .eyebrow {
@@ -82,20 +94,25 @@ a { color: inherit; }
 /* ============================================================================
    HERO (Act 1 · browser side)
    ============================================================================ */
+/* full-bleed: the "Loupe" wordmark is forged inside the canvas, no copy column */
 .hero {
-  display: grid; grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
-  gap: 44px; align-items: center; padding: 40px 0 56px;
+  position: relative;
+  height: min(90vh, 880px); min-height: 480px;
 }
-.hero-copy { max-width: 460px; }
-.hero-title { margin: 16px 0 0; font-size: clamp(30px, 4vw, 46px); font-weight: 600;
-  line-height: 1.04; letter-spacing: -.03em; }
-.hero-line { display: block; }
-.hero-line:nth-child(2) { color: var(--ink-2); }
-.hero-sub { margin: 18px 0 0; font-size: 15.5px; line-height: 1.6; color: var(--ink-2); max-width: 440px; }
-.hero-cta { margin-top: 26px; display: flex; gap: 12px; flex-wrap: wrap; }
+.hero-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+
+/* ---- scroll cue down to the demo ---- */
+.hero-scroll { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%;
+  border: var(--hair) solid var(--hairline); background: var(--surface); box-shadow: var(--shadow-xs);
+  color: var(--ink-2); text-decoration: none; transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.hero-scroll:hover { border-color: var(--iris); color: var(--iris); }
+.hero-scroll-chev { width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg); animation: scroll-bob 1.8s var(--ease) infinite; }
+@keyframes scroll-bob { 0%, 100% { transform: translateY(-2px) rotate(45deg); }
+  50% { transform: translateY(2px) rotate(45deg); } }
 
 /* ---- sandbox shell ---- */
-.hero-demo { min-width: 0; }
 .loupe-sandbox { display: flex; flex-direction: column; gap: 10px; }
 .sb-caption { display: inline-flex; align-items: center; gap: 8px; font: 600 11.5px/1 var(--font);
   color: var(--ink-2); }
@@ -276,6 +293,11 @@ a { color: inherit; }
 .sec-head h2 { font-size: clamp(24px, 3vw, 34px); font-weight: 600; letter-spacing: -.028em; margin: 12px 0 0; }
 .sec-sub { margin: 14px auto 0; font-size: 15px; line-height: 1.6; color: var(--ink-2); max-width: 540px; }
 
+/* ---- Act 2 · interactive demo (own full-width screen) ---- */
+.demo-sec { border-top: none; padding-top: 72px; padding-bottom: 24px; scroll-margin-top: 64px; }
+.demo-stage-wrap { width: 100%; max-width: 880px; margin: 0 auto; }
+.demo-sec .sb-stage { height: 540px; }
+
 /* ---- Act 2 · agent terminal ---- */
 .term { max-width: 760px; margin: 0 auto; border-radius: var(--r-lg);
   border: var(--hair) solid var(--hairline-2); box-shadow: var(--shadow-pop); overflow: hidden;
@@ -399,8 +421,9 @@ a { color: inherit; }
    RESPONSIVE
    ============================================================================ */
 @media (max-width: 900px) {
-  .hero { grid-template-columns: 1fr; gap: 30px; }
-  .hero-copy { max-width: none; }
+  .hero { height: 72vh; min-height: 420px; }
+  .hero-scroll { display: none; }
+  .demo-sec { min-height: auto; }
   .trust-grid { grid-template-columns: 1fr; }
   .pain-grid { grid-template-columns: 1fr; }
   .pain-arrow { transform: rotate(90deg); justify-self: center; }
@@ -408,6 +431,7 @@ a { color: inherit; }
 @media (max-width: 560px) {
   .page { padding: 0 16px 56px; }
   .sb-stage { height: 420px; }
+  .demo-sec .sb-stage { height: 460px; }
   .step { grid-template-columns: 1fr; gap: 10px; }
 }
 

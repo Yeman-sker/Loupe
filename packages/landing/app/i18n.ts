@@ -18,11 +18,20 @@ export const DICT = {
     "Loupe turns “this element, right here” into a structured, project-scoped task your AI coding agent reads over MCP — no lossy translation, no guessing.",
     "Loupe 把“就是这个元素”变成结构化、project-scoped 的任务，AI 编码 Agent 通过 MCP 直接读到 —— 没有有损翻译，不用猜。",
   ],
-  "hero.try": ["Live demo — pointing is locked to the panel on the right.", "实时 demo —— 选取范围锁定在右侧面板内。"],
+  "hero.try": ["Live demo — pointing is locked to this panel.", "实时 demo —— 选取范围锁定在此面板内。"],
   "hero.hint": ["Hover any element · click to leave a mark", "hover 任意元素 · 点击留下一个 mark"],
   "hero.picking": ["Picking element", "正在选取元素"],
+  "hero.demoCta": ["See the live demo", "看实时 demo"],
 
-  // ---- act 2 · agent close ----
+  // ---- act 2 · interactive demo ----
+  "demo.eyebrow": ["LIVE DEMO", "实时 DEMO"],
+  "demo.title": ["Point at the DOM — right here", "就在这里，指一下 DOM"],
+  "demo.sub": [
+    "Hover any element in the panel and the Selection frame morphs to fit it. Click to leave a mark — pointing is scope-locked to the panel, so it never picks the wrong thing.",
+    "在面板里 hover 任意元素，Selection frame 当场形变贴合。点击留下一个 mark —— 选取范围锁定在面板内，永不指错。",
+  ],
+
+  // ---- act 3 · agent close ----
   "agent.eyebrow": ["AGENT SIDE", "AGENT 侧"],
   "agent.title": ["What the agent actually receives", "Agent 实际收到的东西"],
   "agent.sub": [
