@@ -2,107 +2,108 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Release](https://img.shields.io/github/v/release/Yeman-sker/Loupe)](https://github.com/Yeman-sker/Loupe/releases) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Yeman-sker/Loupe/pulls)
 
-> 在本地开发页面上精确「钉选（pin）」一个真实 DOM 元素并写下意图，让 AI 编码 Agent 通过 MCP 精确读取该元素的定位与上下文，完成修改后默认 `resolve`。
+**English** | [简体中文](./README.zh-CN.md)
 
-Loupe 把「我在浏览器里指的这个真实 DOM 元素」转换成 Agent 可执行、可复核、可完成的结构化任务。它**不是**网页批注工具、截图标注工具或页面内设计编辑器。
+> Pin a real DOM element on your local dev page and write your intent — an AI coding agent reads the exact target and context via MCP, edits the code, and `resolve`s the mark by default.
 
-核心信任闭环：
+Loupe turns *"the real DOM element I'm pointing at in my browser"* into an agent-executable, verifiable, completable structured task. It is **not** a web annotation tool, a screenshot markup tool, or an in-page design editor.
+
+Core trust loop:
 
 ```text
 pick → robust locate/recover → persist/sync → low-noise Agent read → resolve
 ```
 
-详见 [`PRD.md`](./PRD.md) 与 [`CONTEXT.md`](./CONTEXT.md)。
+See [`PRD.md`](./PRD.md) and [`CONTEXT.md`](./CONTEXT.md).
 
-## 架构
+## Architecture
 
-Loupe 是本地优先的工具：交互真相源是浏览器扩展的 `chrome.storage.local`，本地 daemon 只做磁盘镜像与 Agent bridge。
+Loupe is local-first: the source of interaction truth lives in the browser extension's `chrome.storage.local`; the local daemon only mirrors to disk and bridges to the agent.
 
-| 组件 | 包名 | 职责 |
+| Component | Package | Responsibility |
 | --- | --- | --- |
-| 浏览器扩展 | `@loupe/extension` | Chrome MV3。picker、composer、locator/context capture、最小 pin overlay、本地优先存储 |
-| 本地 daemon | `@loupe-server/server` | 监听 `127.0.0.1:7373`，暴露带 token 鉴权的 `/v1/marks*` 与 `/mcp`，维护 `~/.loupe/marks.json` 镜像 |
-| 共享 schema | `@loupe-server/shared` | 扩展、daemon、插件共用的类型与 mark schema |
-| Claude 插件 | `@loupe/claude-plugin` | 启动 daemon、注册 MCP proxy、提供 `/loupe:marks` 与 mark-resolver agent |
-| Codex 插件 | `@loupe/codex-plugin` | Codex 侧的 MCP 接入 |
-| 端到端测试 | `@loupe/e2e` | Playwright 驱动的 MV3 扩展 + daemon 全链路测试 |
+| Browser extension | `@loupe/extension` | Chrome MV3 — picker, composer, locator/context capture, minimal pin overlay, local-first storage |
+| Local daemon | `@loupe-server/server` | Listens on `127.0.0.1:7373`, exposes token-authed `/v1/marks*` and `/mcp`, mirrors `~/.loupe/marks.json` |
+| Shared schema | `@loupe-server/shared` | Types and mark schema shared across extension, daemon, and plugins |
+| Claude plugin | `@loupe/claude-plugin` | Starts the daemon, registers the MCP proxy, provides `/loupe:marks` and the mark-resolver agent |
+| Codex plugin | `@loupe/codex-plugin` | Codex-side MCP integration |
+| E2E tests | `@loupe/e2e` | Playwright-driven MV3 extension + daemon full-chain tests |
 
-## 环境要求
+## Requirements
 
-- Node.js ≥ 22（开发机为 v24）
-- pnpm 9（`packageManager` 已锁定 `pnpm@9.15.4`）
-- Chrome / Chromium（加载 MV3 扩展）
+- Node.js ≥ 22 (dev machine runs v24)
+- pnpm 9 (`packageManager` is pinned to `pnpm@9.15.4`)
+- Chrome / Chromium (to load the MV3 extension)
 
-## 快速开始
+## Quick Start
 
 ```bash
 pnpm install
 
-# 构建顺序有依赖：shared 先于其消费方（extension/server/plugins 通过 dist 消费 shared）
+# Build order matters: shared must build before its consumers
+# (extension / server / plugins consume shared via dist)
 pnpm --filter @loupe-server/shared build
 pnpm --filter @loupe/extension build:dev
 pnpm --filter @loupe-server/server build
 ```
 
-在 Chrome 的 `chrome://extensions` 打开「开发者模式」，「加载已解压的扩展程序」选择 `packages/extension/dist`。
+In Chrome, open `chrome://extensions`, enable **Developer mode**, then **Load unpacked** and select `packages/extension/dist`.
 
-启动本地 daemon 后，扩展会与 `127.0.0.1:7373` 同步 marks，Agent 经 MCP 读取。
+Once the local daemon is running, the extension syncs marks with `127.0.0.1:7373`, and the agent reads them over MCP.
 
 ### Golden Path
 
-1. 运行本地应用（如 `http://localhost:5173`）。
-2. 安装 Loupe 扩展与 Claude 插件；插件在 SessionStart 通过 `/health` 检查并按需拉起 daemon。
-3. 扩展检测当前 host 已授权，生成 `project_id` / `route_key` / `session_id`。
-4. 按 `⌥L` 进入拾取模式，用鼠标或键盘选择真实 DOM，`↑/↓` 微调父子层级，`Enter` 确认。
-5. 写下意图（comment 必填），生成 mark。
-6. Agent 读取 project-scoped mark，按 locator/context 定位代码并修改，默认调用 `resolve_mark` 关闭任务。
+1. Run your local app (e.g. `http://localhost:5173`).
+2. Install the Loupe extension and the Claude plugin; the plugin checks `/health` on SessionStart and starts the daemon if needed.
+3. The extension detects the current host is authorized and generates `project_id` / `route_key` / `session_id`.
+4. Press `⌥L` to enter pick mode, select a real DOM node with mouse or keyboard, use `↑/↓` to adjust parent/child depth, and `Enter` to confirm.
+5. Write your intent (comment is required) to create a mark.
+6. The agent reads the project-scoped mark, locates the code by locator/context, edits it, and calls `resolve_mark` to close the task by default.
 
-## 常用脚本
+## Scripts
 
-仓库根目录（对所有包递归执行）：
+At the repo root (runs across all packages):
 
 ```bash
-pnpm check      # 类型检查（= typecheck）
-pnpm test       # 运行所有包的测试
+pnpm check      # type checking (= typecheck)
+pnpm test       # run tests across all packages
 ```
 
-单包：
+Per package:
 
 ```bash
-pnpm --filter @loupe/extension      check        # tsc 类型检查
-pnpm --filter @loupe/extension      build        # 产物构建
-pnpm --filter @loupe/extension      build:dev    # 开发构建（含 dev manifest）
+pnpm --filter @loupe/extension      check        # tsc type check
+pnpm --filter @loupe/extension      build        # production build
+pnpm --filter @loupe/extension      build:dev    # dev build (includes dev manifest)
 pnpm --filter @loupe-server/server  build
 pnpm --filter @loupe/e2e            test
 ```
 
-> 编辑 `@loupe-server/shared` 的 `src` 后需重新 `build`，否则消费方看到的是 dist 中的旧导出。
+> After editing `@loupe-server/shared` `src`, you must `build` again — otherwise consumers see the stale exports from `dist`.
 
-## 仓库结构
+## Repository Structure
 
 ```text
 packages/
-  extension/      Chrome MV3 扩展（picker / composer / pin overlay）
-  server/         本地 daemon（HTTP + MCP，marks.json 镜像）
-  shared/         共享 schema 与类型
-  claude-plugin/  Claude Code 插件
-  codex-plugin/   Codex 插件
-  e2e/            端到端测试
+  extension/      Chrome MV3 extension (picker / composer / pin overlay)
+  server/         Local daemon (HTTP + MCP, marks.json mirror)
+  shared/         Shared schema and types
+  claude-plugin/  Claude Code plugin
+  codex-plugin/   Codex plugin
+  e2e/            End-to-end tests
 docs/
-  adp-*.md        架构决策记录（ADP）
-  phases/         分阶段交付文档
-  ui-ux/          产品设计原型（UI/UX 实现的唯一依据）
-PRD.md            核心产品文档
-CONTEXT.md        领域语言与术语
+  adp-*.md        Architecture decision records (ADP)
+  phases/         Phased delivery docs
+  ui-ux/          Product design prototypes (the single source of truth for UI/UX implementation)
+PRD.md            Core product doc
+CONTEXT.md        Domain language and glossary
 ```
 
-## 设计原则（摘自 PRD）
+## Design Principles (from the PRD)
 
-1. **定位即信任。** 宁可显示 `drifted` / `lost`，也不静默指错。
-2. **完成默认 `resolve`，不默认 `delete`。**
-3. **project / session 隔离是安全边界。** mark 不能只按 route 存取。
-4. **本地优先，daemon 镜像。**
-5. **Agent payload 低噪声。** raw storage 保留证据，MCP 只返回当前决策所需信息。
-6. **默认安全。** loopback 接口必须带 token，页面脚本没有任何无 token 写入口。
-</content>
-</invoke>
+1. **Locating is trust.** Prefer showing `drifted` / `lost` over silently pointing at the wrong element.
+2. **Done defaults to `resolve`, not `delete`.**
+3. **project / session isolation is the security boundary.** Marks must not be stored/accessed by route alone.
+4. **Local-first, daemon mirrors.**
+5. **Low-noise agent payload.** Raw storage keeps evidence; MCP returns only what the current decision needs.
+6. **Secure by default.** The loopback interface must carry a token; page scripts have no tokenless write entry point.
