@@ -1,5 +1,7 @@
 # Loupe
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Release](https://img.shields.io/github/v/release/Yeman-sker/Loupe)](https://github.com/Yeman-sker/Loupe/releases) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Yeman-sker/Loupe/pulls)
+
 > 在本地开发页面上精确「钉选（pin）」一个真实 DOM 元素并写下意图，让 AI 编码 Agent 通过 MCP 精确读取该元素的定位与上下文，完成修改后默认 `resolve`。
 
 Loupe 把「我在浏览器里指的这个真实 DOM 元素」转换成 Agent 可执行、可复核、可完成的结构化任务。它**不是**网页批注工具、截图标注工具或页面内设计编辑器。
